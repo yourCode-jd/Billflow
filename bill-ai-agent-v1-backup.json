@@ -1,0 +1,471 @@
+{
+  "name": "Bill AI Agent - Demo",
+  "nodes": [
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-3.8-flash",
+          "mode": "list",
+          "cachedResultName": "Gemini 3.8 Flash"
+        },
+        "text": "Read this bill/invoice and extract the details in clean JSON.\n\nReturn only valid JSON with this structure:\n{\n  \"supplier_name\": \"\",\n  \"invoice_number\": \"\",\n  \"date\": \"\",\n  \"gstin\": \"\",\n  \"payment_mode\": \"\",\n  \"subtotal\": \"\",\n  \"gst_total\": \"\",\n  \"round_off\": \"\",\n  \"grand_total\": \"\",\n  \"items\": [\n    {\n      \"description\": \"\",\n      \"qty\": \"\",\n      \"rate\": \"\",\n      \"amount\": \"\",\n      \"gst_percent\": \"\"\n    }\n  ]\n}\n\nRules:\n- Extract all visible line items.\n- Keep numbers exactly as written.\n- If a field is missing, return an empty string.\n- Return JSON only, no explanation.",
+        "inputType": "binary",
+        "binaryPropertyName": "Invoice",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "1d10e004-36bc-49ee-879d-845ef2fc0c62",
+      "name": "Analyze an image",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "MbeysMHZkx4XklPS",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst results = [];\n\nfor (const input of $input.all()) {\n  // Read Gemini's extracted response\n  const raw = input.json.content?.parts?.[0]?.text;\n\n  if (typeof raw !== 'string') {\n    throw new Error('Gemini response text is missing');\n  }\n\n  // Remove optional Markdown JSON fences\n  const cleaned = raw.trim()\n    .replace(/^```(?:json)?\\s*/i, '')\n    .replace(/\\s*```$/, '');\n\n  const invoice = JSON.parse(cleaned);\n\n  if (!Array.isArray(invoice.items) || !invoice.items.length) {\n    throw new Error('Invoice has no extracted items');\n  }\n\n  // Create one Google Sheets row per product\n  for (const item of invoice.items) {\n    results.push({\n      json: {\n        supplier_name: invoice.supplier_name ?? '',\n        invoice_number: invoice.invoice_number ?? '',\n        date: invoice.date ?? '',\n        gstin: invoice.gstin ?? '',\n        payment_mode: invoice.payment_mode ?? '',\n        description: item.description ?? '',\n        qty: item.qty ?? '',\n        rate: item.rate ?? '',\n        amount: item.amount ?? '',\n        gst_percent: item.gst_percent ?? '',\n        subtotal: invoice.subtotal ?? '',\n        gst_total: invoice.gst_total ?? '',\n        round_off: invoice.round_off ?? '',\n        grand_total: invoice.grand_total ?? '',\n        review_status: 'Pending Review'\n      }\n    });\n  }\n}\n\nreturn results;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "b9e8acbd-218d-4e7b-8420-e58383f8ceb7",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1qPQsJBXmjhPvp1_fi901KHU_-Seox9-03DVtGUt-mik",
+          "mode": "list",
+          "cachedResultName": "Bill AI Agent - Invoice Records",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1qPQsJBXmjhPvp1_fi901KHU_-Seox9-03DVtGUt-mik/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Invoices",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1qPQsJBXmjhPvp1_fi901KHU_-Seox9-03DVtGUt-mik/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "supplier_name",
+              "displayName": "supplier_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "invoice_number",
+              "displayName": "invoice_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "date",
+              "displayName": "date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "gstin",
+              "displayName": "gstin",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "payment_mode",
+              "displayName": "payment_mode",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "qty",
+              "displayName": "qty",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "rate",
+              "displayName": "rate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "amount",
+              "displayName": "amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "gst_percent",
+              "displayName": "gst_percent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subtotal",
+              "displayName": "subtotal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "gst_total",
+              "displayName": "gst_total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "round_off",
+              "displayName": "round_off",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "grand_total",
+              "displayName": "grand_total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "review_status",
+              "displayName": "review_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1728,
+        0
+      ],
+      "id": "1fc760ca-76b3-4a54-9903-23db5c030a65",
+      "name": "Append row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Nf5n18HrHV0Qx5i3",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst rows = $input.all();\nif (!rows.length) throw new Error('No invoice rows received');\n\nconst warnings = [];\nconst TOLERANCE = 0.02;\n\n// Convert monetary values safely\nfunction money(value, name) {\n  if (value === null || value === undefined ||\n      String(value).trim() === '') {\n    warnings.push(`${name} is missing`);\n    return null;\n  }\n\n  const n = Number(String(value).replace(/[₹,\\s]/g, ''));\n\n  if (!Number.isFinite(n) || n < 0) {\n    warnings.push(`${name} is invalid`);\n    return null;\n  }\n  return n;\n}\n\nfunction close(a, b) {\n  return Math.abs(a - b) <= TOLERANCE;\n}\n\nconst first = rows[0].json;\nconst subtotal = money(first.subtotal, 'Subtotal');\nconst gst = money(first.gst_total, 'GST total');\nconst roundOff = Number(first.round_off || 0);\nconst grandTotal = money(first.grand_total, 'Grand total');\n\nif (!first.supplier_name) warnings.push('Supplier missing');\nif (!first.invoice_number) warnings.push('Invoice number missing');\nif (!first.date) warnings.push('Invoice date missing');\n\nif (!Number.isFinite(roundOff)) {\n  warnings.push('Invalid round-off');\n}\n\nlet calculatedSubtotal = 0;\nlet allAmountsValid = true;\nlet calculatedGST = 0;\nlet allGSTRatesValid = true;\n\nfor (const [index, row] of rows.entries()) {\n  const d = row.json;\n  const prefix = `Item ${index + 1}`;\n\n  if (!d.description) warnings.push(`${prefix}: name missing`);\n\n  const qty = money(d.qty, `${prefix} quantity`);\n  const rate = money(d.rate, `${prefix} rate`);\n  const amount = money(d.amount, `${prefix} amount`);\n\n  if (qty !== null && rate !== null && amount !== null) {\n    if (!close(qty * rate, amount)) {\n      warnings.push(`${prefix}: quantity x rate mismatch`);\n    }\n  }\n\n  if (amount !== null) {\n    calculatedSubtotal += amount;\n  } else {\n    allAmountsValid = false;\n  }\n\n  const gstRate = Number(String(d.gst_percent ?? '')\n    .replace('%', '').trim());\n\n  if (String(d.gst_percent ?? '').trim() === '' ||\n      !Number.isFinite(gstRate) || gstRate < 0 ||\n      gstRate > 100 || amount === null) {\n    allGSTRatesValid = false;\n  } else {\n    calculatedGST += amount * gstRate / 100;\n  }\n\n  // Check that invoice header values agree across rows\n  for (const field of ['supplier_name', 'invoice_number',\n    'date', 'subtotal', 'gst_total', 'grand_total']) {\n    if (String(d[field] ?? '') !== String(first[field] ?? '')) {\n      warnings.push(`${prefix}: inconsistent ${field}`);\n    }\n  }\n}\n\nif (allAmountsValid && subtotal !== null &&\n    !close(calculatedSubtotal, subtotal)) {\n  warnings.push('Subtotal does not match item amounts');\n}\n\nif (subtotal !== null && gst !== null &&\n    grandTotal !== null && Number.isFinite(roundOff) &&\n    !close(subtotal + gst + roundOff, grandTotal)) {\n  warnings.push('Grand total calculation mismatch');\n}\n\n// GST check assumes item amounts exclude GST.\n// If tax-inclusive, review GST calculation manually.\nif (allGSTRatesValid && gst !== null &&\n    !close(calculatedGST, gst)) {\n  warnings.push('GST mismatch: verify tax-inclusive/exclusive pricing');\n}\n\nconst uniqueWarnings = [...new Set(warnings)];\nconst status = uniqueWarnings.length\n  ? 'Needs Review'\n  : 'Pending Review';\n\nreturn rows.map((row, index) => ({\n  json: {\n    ...row.json,\n    review_status: status,\n    validation_status: uniqueWarnings.length ? 'Flagged' : 'Passed',\n    validation_notes: uniqueWarnings.join('; '),\n    calculated_subtotal: calculatedSubtotal.toFixed(2),\n    calculated_gst_exclusive: calculatedGST.toFixed(2)\n  },\n  pairedItem: { item: index }\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        0
+      ],
+      "id": "07fad028-42f6-4f15-8877-8e8e53c3f78f",
+      "name": "Invoice Validation"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1qPQsJBXmjhPvp1_fi901KHU_-Seox9-03DVtGUt-mik",
+          "mode": "list",
+          "cachedResultName": "Bill AI Agent - Invoice Records",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1qPQsJBXmjhPvp1_fi901KHU_-Seox9-03DVtGUt-mik/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Invoices",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1qPQsJBXmjhPvp1_fi901KHU_-Seox9-03DVtGUt-mik/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "invoice_number",
+              "lookupValue": "={{ $json.invoice_number }}"
+            },
+            {
+              "lookupColumn": "supplier_name",
+              "lookupValue": "={{ $json.supplier_name }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1120,
+        0
+      ],
+      "id": "daf6435f-0cca-4a3f-94fe-15873ce20219",
+      "name": "Check Existing Invoice",
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Nf5n18HrHV0Qx5i3",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "eb184654-0b98-4e73-be41-a721e2f52e78",
+              "leftValue": "={{ $json.row_number }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        1344,
+        0
+      ],
+      "id": "f050aad5-64a0-4a2b-861c-d9e3af1c5eb9",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst lookupResults = $input.all();\n\n// Stop if the lookup found an existing invoice.\n// This is an extra safety check.\nif (lookupResults.some(item => item.json.row_number != null)) {\n  return [];\n}\n\n// Retrieve the original validated invoice rows.\nconst originalRows = $('Invoice Validation').all();\n\nif (!originalRows.length) {\n  throw new Error('Original invoice rows not found');\n}\n\n// Check the incoming result represents a missing invoice.\nif (\n  lookupResults.length !== 1 ||\n  Object.keys(lookupResults[0].json).length !== 0\n) {\n  throw new Error('Unexpected duplicate lookup result');\n}\n\n// Restore the original rows for Google Sheets.\nreturn originalRows.map(item => ({\n  json: { ...item.json }\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1536,
+        192
+      ],
+      "id": "b322fc2e-eeea-4d14-95b0-ceb02846e3be",
+      "name": "Restore Invoice Rows"
+    },
+    {
+      "parameters": {
+        "formTitle": "Bill AI Agent",
+        "formDescription": "Upload your bill or invoice to extract details automatically.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Invoice",
+              "fieldType": "file",
+              "multipleFiles": false,
+              "acceptFileTypes": ".jpg,.jpeg,.png,.pdf",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        0
+      ],
+      "id": "2288f7b0-cb4a-4e4b-b3f8-51eec12b7cb7",
+      "name": "On form submission",
+      "webhookId": "2c61c474-c6e7-466f-9720-241ba5a61b80"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Analyze an image": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Invoice Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invoice Validation": {
+      "main": [
+        [
+          {
+            "node": "Check Existing Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Existing Invoice": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Restore Invoice Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Invoice Rows": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "On form submission": {
+      "main": [
+        [
+          {
+            "node": "Analyze an image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "499047da-02bb-4a8e-95dc-b7d74d39e545",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "eba56a7ac5bd926a9e82cb2e6502a6386a000a6b392d3536824d3105f0292d36"
+  },
+  "nodeGroups": [],
+  "id": "fyOQ9wSbKYyY8hYQ",
+  "tags": []
+}

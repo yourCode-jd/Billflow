@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Billflow — Invoice AI Demo</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+
+<body>
+    <div class="shell">
+        <aside>
+            <div class="brand"><span class="mark">▦</span> billflow <span class="tag">DEMO</span></div>
+            <div class="nav active">◫ &nbsp; Bill processor</div>
+            <div class="asidebottom"><span class="statusdot"></span> Local demo · Private workspace<p>No files are saved
+                    on this server.</p>
+            </div>
+        </aside>
+        <main>
+            <header>
+                <div>
+                    <p class="eyebrow">DOCUMENT AUTOMATION / WORKSPACE</p>
+                    <h1>Process a bill</h1>
+                    <p class="muted">Extract the details, review every number, and send clean records forward.</p>
+                </div><span class="pill">01 / First prototype</span>
+            </header>
+            <section class="step"><span class="number">01</span>
+                <div class="stepbody">
+                    <h2>Upload your invoice</h2>
+                    <p class="muted small">Printed or handwritten · JPG, PNG, WebP or PDF · up to 10 MB</p><label
+                        class="drop" for="file"><span class="upload-icon">↑</span><b id="filename">Choose a bill or drop
+                            it here</b><small>Images and PDF documents supported</small><input id="file" type="file"
+                            accept="image/jpeg,image/png,image/webp,application/pdf"></label><button id="extract"
+                        class="primary" disabled>Extract bill details <span>→</span></button>
+                    <p id="message" class="feedback" role="status" aria-live="polite"></p>
+                </div>
+            </section>
+            <section class="step"><span class="number">02</span>
+                <div class="stepbody">
+                    <div class="sectionhead">
+                        <div>
+                            <h2>Review extracted details</h2>
+                            <p class="muted small">AI can make mistakes. Verify against the original bill.</p>
+                        </div><span id="state" class="state">Not processed</span>
+                    </div>
+                    <div id="review" hidden>
+                        <div id="warnings" class="warning" hidden></div>
+                        <div class="fields"><label>Supplier<input id="supplier"></label><label>Invoice number<input
+                                    id="invoice_number"></label><label>Date (YYYY-MM-DD)<input id="date"
+                                    placeholder="YYYY-MM-DD"></label><label>Currency<input
+                                    id="currency"></label><label>Subtotal<input id="subtotal" type="number"
+                                    step="any"></label><label>Tax / GST<input id="tax" type="number"
+                                    step="any"></label><label>Total<input id="total" type="number" step="any"></label>
+                        </div>
+                        <div class="tablewrap">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Description</th>
+                                        <th>Quantity</th>
+                                        <th>Unit price</th>
+                                        <th>Amount</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="rows"></tbody>
+                            </table>
+                        </div><button class="secondary" id="add">+ Add row</button><label class="check"><input
+                                type="checkbox" id="approved"> I have checked the details against the original
+                            bill.</label>
+                        <div class="actions"><button id="csv" class="secondary" disabled>Download CSV ↓</button><button
+                                id="save" class="primary" disabled>Send to n8n →</button></div>
+                    </div>
+                    <p id="empty" class="empty">Your extracted invoice will appear here.</p>
+                    <p id="save-message" class="feedback" role="status" aria-live="polite"></p>
+                </div>
+            </section>
+            <footer>Billflow proof of concept · Not an accounting system · Human approval required</footer>
+        </main>
+    </div>
+    <script type="module" src="/app.js"></script>
+</body>
+
+</html>
