@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateInvoice,safeCsv} from './invoice.js';
-import {applyLocalEnvironment,classifyGeminiFailure,classifyN8nFailure,getN8nInvoiceWebhookUrl,getN8nSubmissionStatusWebhookUrl,hasJsonContentType,isExpectedFile,isSameOrigin,isSubmissionId,normalize,normalizeSubmissionStatus,requestGemini,requestSubmissionStatus,submitInvoiceToN8n} from './index.js';
+import {applyLocalEnvironment,classifyGeminiFailure,classifyN8nFailure,getN8nInvoiceWebhookUrl,getN8nSubmissionStatusWebhookUrl,hasJsonContentType,isDuplicateSubmissionResult,isExpectedFile,isSameOrigin,isSubmissionId,normalize,normalizeN8nUploadResult,normalizeSubmissionStatus,requestGemini,requestSubmissionStatus,submitInvoiceToN8n} from './index.js';
 test('warns when arithmetic mismatches',()=>{assert.ok(validateInvoice({supplier:'X',invoice_number:'1',date:'2026-10-21',subtotal:100,tax:5,total:200,items:[{description:'A',quantity:2,unit_price:20,amount:30}]}).length>=2)});
 test('CSV escapes formula-like content',()=>{const csv=safeCsv({supplier:'=CMD()',invoice_number:'1',date:'',currency:'INR',items:[{description:'+evil',quantity:1,unit_price:10,amount:10}],subtotal:10,tax:0,total:10});assert.match(csv,/"'=CMD\(\)"/);assert.match(csv,/"'\+evil"/)});
 test('recognizes the declared upload file signatures',()=>{
@@ -69,6 +69,19 @@ test('classifies n8n authentication and availability failures safely',()=>{
   assert.equal(classifyN8nFailure(401).code,'N8N_WEBHOOK_AUTH_FAILED');
   assert.equal(classifyN8nFailure(503).code,'N8N_WEBHOOK_UNAVAILABLE');
 });
+test('accepts only explicit duplicate results from n8n',()=>{
+  assert.equal(isDuplicateSubmissionResult({duplicate:true}),true);
+  assert.equal(isDuplicateSubmissionResult({duplicate:false}),false);
+  assert.equal(isDuplicateSubmissionResult({message:'Duplicate bill'}),false);
+});
+test('maps explicit duplicate and normal upload responses for the dashboard',()=>{
+  const submissionId='123e4567-e89b-42d3-a456-426614174000';
+  assert.deepEqual(normalizeN8nUploadResult({duplicate:true},submissionId),{accepted:true,submission_id:submissionId,duplicate:true,processing_status:'duplicate',message:'Duplicate bill detected — this invoice has already been submitted. No duplicate record was created.'});
+  assert.deepEqual(normalizeN8nUploadResult({submission_id:submissionId,duplicate:true},submissionId),{accepted:true,submission_id:submissionId,duplicate:true,processing_status:'duplicate',message:'Duplicate bill detected — this invoice has already been submitted. No duplicate record was created.'});
+  assert.deepEqual(normalizeN8nUploadResult({accepted:true,duplicate:false},submissionId),{accepted:true,submission_id:submissionId,duplicate:false,processing_status:'accepted_for_processing',message:'Accepted for processing — not yet saved.'});
+  assert.deepEqual(normalizeN8nUploadResult({accepted:true},submissionId),{accepted:true,submission_id:submissionId,processing_status:'accepted_for_processing',message:'Accepted for processing — not yet saved.'});
+  assert.throws(()=>normalizeN8nUploadResult({submission_id:'original-submission',duplicate:true},submissionId),/Mismatched upload response/);
+});
 test('requires a configured HTTPS n8n invoice webhook on the expected host',()=>{
   assert.equal(getN8nInvoiceWebhookUrl({}).code,'N8N_WEBHOOK_URL_MISSING');
   const valid=getN8nInvoiceWebhookUrl({N8N_WEBHOOK_URL:'https://jastpss.app.n8n.cloud/webhook/dashboard-invoice-upload'});
@@ -91,7 +104,21 @@ test('requests and normalizes a submission status without exposing the server cr
   assert.equal(request.url.searchParams.get('submission_id'),'123e4567-e89b-42d3-a456-426614174000');
   assert.equal(request.options.method,'GET');
   assert.equal(request.options.headers['x-bill-ai-secret'],'mock-secret');
-  assert.deepEqual(normalizeSubmissionStatus({found:true,submission_id:'123e4567-e89b-42d3-a456-426614174000',state:'saved',review_status:'Needs Review'},'123e4567-e89b-42d3-a456-426614174000'),{found:true,submission_id:'123e4567-e89b-42d3-a456-426614174000',state:'saved',supplier_name:'',invoice_number:'',validation_status:'',review_status:'Needs Review',message:''});
+  const normalStatus=normalizeSubmissionStatus({found:true,submission_id:'123e4567-e89b-42d3-a456-426614174000',state:'saved',review_status:'Needs Review'},'123e4567-e89b-42d3-a456-426614174000');
+  assert.equal(normalStatus.found,true);
+  assert.equal(Object.hasOwn(normalStatus,'duplicate'),false);
+  assert.equal(normalizeSubmissionStatus({found:false,state:'processing'},'123e4567-e89b-42d3-a456-426614174000').found,false);
+});
+test('passes an explicit duplicate result from status through the safe response shape',()=>{
+  assert.equal(normalizeSubmissionStatus({found:false,duplicate:true,state:'duplicate'},'123e4567-e89b-42d3-a456-426614174000').duplicate,true);
+});
+test('passes formatted invoice totals and fractional GST rates through status normalization',()=>{
+  const status=normalizeSubmissionStatus({found:true,supplier_name:'Supplier',invoice_number:'INV-1',date:'2026-10-26',gstin:'GSTIN-1',payment_mode:'',subtotal:'1,11,500.00',gst_total:18570,round_off:'0',grand_total:'1,30,070.00',calculated_subtotal:'1,11,500.00',calculated_gst_exclusive:18570,review_status:'Needs Review',validation_status:'Valid',validation_notes:'GST total is missing. Check totals.',items:[{description:'Paper',qty:2,rate:50,amount:100,gst_percent:0.18},{description:'Ink',qty:1,rate:20,amount:20,gst_percent:0.12}],secret:'must not be returned'},'123e4567-e89b-42d3-a456-426614174000');
+  assert.deepEqual(status,{found:true,submission_id:'123e4567-e89b-42d3-a456-426614174000',state:'',supplier_name:'Supplier',invoice_number:'INV-1',date:'2026-10-26',gstin:'GSTIN-1',payment_mode:'',currency:'',subtotal:111500,tax:18570,total:130070,gst_total:18570,round_off:0,grand_total:130070,calculated_subtotal:111500,calculated_gst_exclusive:18570,items:[{description:'Paper',quantity:2,unit_price:50,amount:100,gst_percent:0.18},{description:'Ink',quantity:1,unit_price:20,amount:20,gst_percent:0.12}],validation_status:'Valid',validation_notes:'Check totals.',review_status:'Needs Review',message:''});
+});
+test('keeps GST percentage fields through invoice normalization for saving',()=>{
+  const invoice=normalize({items:[{description:'Paper',quantity:1,unit_price:50,amount:50,gst_percent:0.18}]});
+  assert.equal(invoice.items[0].gst_percent,0.18);
 });
 test('loads the dedicated webhook secret and supports the existing server-side name',()=>{
   const dedicated={};

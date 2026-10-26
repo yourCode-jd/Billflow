@@ -80,7 +80,7 @@ export function normalize(result) {
     supplier: String(inv.supplier ?? ''), invoice_number: String(inv.invoice_number ?? ''),
     date: String(inv.date ?? ''), currency: String(inv.currency ?? 'INR'),
     subtotal: inv.subtotal ?? null, tax: inv.tax ?? null, total: inv.total ?? null,
-    items: sourceItems.slice(0,100).map(x => ({description:String(x.description ?? ''),quantity:x.quantity ?? null,unit_price:x.unit_price ?? null,amount:x.amount ?? null}))
+    items: sourceItems.slice(0,100).map(x => ({description:String(x.description ?? ''),quantity:x.quantity ?? null,unit_price:x.unit_price ?? null,amount:x.amount ?? null,...(x.gst_percent!==undefined?{gst_percent:x.gst_percent}:{})}))
   };
 }
 export function classifyGeminiFailure(httpStatus, raw, model) {
@@ -164,12 +164,35 @@ export async function requestSubmissionStatus({submissionId,secret,endpoint,fetc
   statusUrl.searchParams.set('submission_id',submissionId);
   return fetchImpl(statusUrl,{method:'GET',headers:{'x-bill-ai-secret':secret},signal:AbortSignal.timeout(15000)});
 }
+export function isDuplicateSubmissionResult(payload) {
+  return Boolean(payload&&typeof payload==='object'&&payload.duplicate===true);
+}
+export function normalizeN8nUploadResult(payload,submissionId) {
+  if (payload?.submission_id!==undefined&&payload.submission_id!==submissionId) throw new Error('Mismatched upload response');
+  const duplicate=isDuplicateSubmissionResult(payload);
+  const result={
+    accepted:true,
+    submission_id:submissionId,
+    processing_status:duplicate?'duplicate':'accepted_for_processing',
+    message:duplicate?'Duplicate bill detected — this invoice has already been submitted. No duplicate record was created.':'Accepted for processing — not yet saved.'
+  };
+  if (typeof payload?.duplicate==='boolean') result.duplicate=duplicate;
+  return result;
+}
 function statusField(value,limit=200) {
   return typeof value==='string' ? value.slice(0,limit) : '';
 }
 function invoiceValue(value,limit=200) {
-  if (typeof value==='string') return value.slice(0,limit);
-  return typeof value==='number' && Number.isFinite(value) ? value : '';
+  if (typeof value==='number' && Number.isFinite(value)) return value;
+  if (typeof value==='string') {
+    const numeric=value.trim().replaceAll(',','');
+    if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(numeric)) {
+      const parsed=Number(numeric);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return value.slice(0,limit);
+  }
+  return '';
 }
 function normalizeStatusItems(value) {
   if (!Array.isArray(value)) return [];
@@ -184,22 +207,34 @@ function normalizeStatusItems(value) {
 export function normalizeSubmissionStatus(payload,submissionId) {
   if (!payload || typeof payload!=='object' || typeof payload.found!=='boolean') throw new Error('Invalid status response');
   if (payload.submission_id && payload.submission_id!==submissionId) throw new Error('Mismatched status response');
-  return {
+  const gstTotal=invoiceValue(payload.gst_total ?? payload.tax);
+  const validationNotes=statusField(payload.validation_notes,1000);
+  const normalized={
     found:payload.found,
     submission_id:submissionId,
     state:statusField(payload.state,80),
     supplier_name:statusField(payload.supplier_name),
     invoice_number:statusField(payload.invoice_number),
     date:statusField(payload.date,80),
+    gstin:statusField(payload.gstin,80),
+    payment_mode:statusField(payload.payment_mode,80),
     currency:statusField(payload.currency,12),
     subtotal:invoiceValue(payload.subtotal),
     tax:invoiceValue(payload.tax ?? payload.gst_total),
     total:invoiceValue(payload.total ?? payload.grand_total),
+    gst_total:gstTotal,
+    round_off:invoiceValue(payload.round_off),
+    grand_total:invoiceValue(payload.grand_total ?? payload.total),
+    calculated_subtotal:invoiceValue(payload.calculated_subtotal),
+    calculated_gst_exclusive:invoiceValue(payload.calculated_gst_exclusive),
     items:normalizeStatusItems(payload.items),
     validation_status:statusField(payload.validation_status,80),
+    validation_notes:typeof gstTotal==='number' ? validationNotes.split(/(?<=[.;])\s+|\r?\n/).filter(note=>!/^gst total is missing\.?$/i.test(note.trim())).join(' ').trim() : validationNotes,
     review_status:statusField(payload.review_status,80),
     message:statusField(payload.message)
   };
+  if (typeof payload.duplicate==='boolean') normalized.duplicate=isDuplicateSubmissionResult(payload);
+  return normalized;
 }
 export function classifyN8nFailure(status) {
   if (status===401 || status===403) return {code:'N8N_WEBHOOK_AUTH_FAILED',error:'The invoice-processing service rejected the server credential.'};
@@ -231,8 +266,9 @@ async function extract(req,res) {
     const failure=classifyN8nFailure(response.status);
     return reply(res,502,failure);
   }
-  try { await response.body?.cancel(); } catch {}
-  return reply(res,202,{accepted:true,submission_id:submissionId,processing_status:'accepted_for_processing',message:'Accepted for processing — not yet saved.'});
+  let n8nResult;
+  try { n8nResult=await response.json(); } catch { try { await response.body?.cancel(); } catch {} }
+  return reply(res,202,normalizeN8nUploadResult(n8nResult,submissionId));
 }
 function statusFailure(status) {
   if (status===401 || status===403) return {code:'N8N_STATUS_AUTH_FAILED',error:'The submission-status service rejected the server credential.'};
@@ -292,7 +328,7 @@ export function createServer() {
     }
     if(req.method!=='GET') return reply(res,405,{error:'Method not allowed'});
     const page = req.url==='/' ? '/index.html' : req.url;
-    if (!['/index.html','/app.js','/style.css'].includes(page)) return reply(res,404,{error:'Not found'});
+    if (!['/index.html','/app.js','/style.css','/recovery.css'].includes(page)) return reply(res,404,{error:'Not found'});
     const buffer=await readFile(resolve(root,'public',page.slice(1)));
     res.writeHead(200,{'Content-Type':mime[extname(page)],...securityHeaders}); res.end(buffer);
   } catch (e) { reply(res,e.status||500,{error:e.status?e.message:'Unexpected server error.'}); }

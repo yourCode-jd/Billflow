@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Billflow — Invoice AI Demo</title>
     <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/recovery.css">
 </head>
 
 <body>
@@ -48,9 +49,11 @@
                         <div id="warnings" class="warning" hidden></div>
                         <div class="fields"><label>Supplier<input id="supplier"></label><label>Invoice number<input
                                     id="invoice_number"></label><label>Date (YYYY-MM-DD)<input id="date"
-                                    placeholder="YYYY-MM-DD"></label><label>Currency<input
+                                    placeholder="YYYY-MM-DD"></label><label>GSTIN<input id="gstin"></label><label>Payment
+                                mode<input id="payment_mode"></label><label>Currency<input
                                     id="currency"></label><label>Subtotal<input id="subtotal" type="number"
                                     step="any"></label><label>Tax / GST<input id="tax" type="number"
+                                    step="any"></label><label>Round-off<input id="round_off" type="number"
                                     step="any"></label><label>Total<input id="total" type="number" step="any"></label>
                         </div>
                         <div class="tablewrap">
@@ -61,6 +64,7 @@
                                         <th>Quantity</th>
                                         <th>Unit price</th>
                                         <th>Amount</th>
+                                        <th>GST %</th>
                                         <th></th>
                                     </tr>
                                 </thead>
@@ -71,6 +75,16 @@
                             bill.</label>
                         <div class="actions"><button id="csv" class="secondary" disabled>Download CSV ↓</button><button
                                 id="save" class="primary" disabled>Send to n8n →</button></div>
+                    </div>
+                    <div id="recovery" hidden>
+                        <label for="recovery-id">Have a submission ID? Restore a saved invoice:</label>
+                        <input id="recovery-id" autocomplete="off" spellcheck="false">
+                        <button id="recover" class="secondary" type="button">Restore invoice</button>
+                        <p id="recovery-message" class="feedback" role="status" aria-live="polite"></p>
+                    </div>
+                    <div id="duplicate-warning" class="duplicate-warning" role="status" aria-live="assertive" hidden>
+                        <strong>Duplicate bill detected</strong>
+                        <span>This invoice has already been submitted. No duplicate record was created.</span>
                     </div>
                     <p id="empty" class="empty">Your extracted invoice will appear here.</p>
                     <p id="save-message" class="feedback" role="status" aria-live="polite"></p>
