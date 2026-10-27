@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {displayGstPercent,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,submissionResultKind} from './app.js';
+import {displayGstPercent,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,statusWarningText,submissionResultKind} from './app.js';
 
 const storage=initial=>{const values=new Map(Object.entries(initial||{}));return {getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)}};
 
@@ -113,8 +113,25 @@ test('restoration returns source-of-truth saved status',async()=>{
   assert.equal(result.status.review_status,'Needs Review');
 });
 test('restores formatted invoice totals as numeric form values',()=>{
-  assert.deepEqual(restoredInvoiceFields({supplier_name:'Supplier',invoice_number:'INV-1',date:'2026-10-26',gstin:'',payment_mode:'',currency:'INR',subtotal:'1,11,500.00',gst_total:18570,round_off:0,grand_total:'1,30,070.00'}),{supplier:'Supplier',invoice_number:'INV-1',date:'2026-10-26',gstin:'',payment_mode:'',currency:'INR',subtotal:111500,tax:18570,round_off:0,total:130070});
+  assert.deepEqual(restoredInvoiceFields({supplier_name:'Supplier',invoice_number:'INV-1',date:'2026-10-26',gstin:'',payment_mode:'',currency:'INR',subtotal:'1,11,500.00',discount:0,gst_total:18570,round_off:0,grand_total:'1,30,070.00'}),{supplier:'Supplier',invoice_number:'INV-1',date:'2026-10-26',gstin:'',payment_mode:'',currency:'INR',subtotal:111500,discount:0,tax:18570,round_off:0,total:130070});
   assert.equal(parseInvoiceNumber('not a number'),'');
+});
+test('restores EcoMart discount, currency, all five line items, and genuine warnings',()=>{
+  const restored=restoredInvoiceFields({supplier_name:'EcoMart Supplies',invoice_number:'ECO-2026-0824',date:'Oct 28, 2026',gstin:'',payment_mode:'',currency:'$',subtotal:1153.5,discount:-57.68,gst_total:95.8,round_off:'',grand_total:1191.62});
+  assert.equal(restored.currency,'$');
+  assert.equal(restored.discount,-57.68);
+  assert.equal(restored.round_off,'');
+  const items=restoredInvoiceItems([
+    {description:'Coffee',quantity:20,unit_price:18.5,amount:370,gst_percent:8.5},
+    {description:'Notebook',quantity:50,unit_price:4.25,amount:212.5,gst_percent:8.5},
+    {description:'Toothbrush',quantity:30,unit_price:6.75,amount:202.5,gst_percent:8.5},
+    {description:'Bottle',quantity:15,unit_price:15.9,amount:238.5,gst_percent:8.5},
+    {description:'LED Bulb',quantity:40,unit_price:3.25,amount:130,gst_percent:8.5}
+  ]);
+  assert.equal(items.length,5);
+  assert.ok(items.every(item=>item.gst_percent===8.5));
+  assert.equal(statusWarningText({validation_notes:'GST mismatch: verify tax-inclusive/exclusive pricing'}),'GST mismatch: verify tax-inclusive/exclusive pricing');
+  assert.equal(statusWarningText({validation_notes:''}),'');
 });
 test('converts fractional GST rates for display and back to the stored fraction',()=>{
   assert.equal(displayGstPercent(0.18),18);

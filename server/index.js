@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
-import { validateInvoice, safeCsv } from './invoice.js';
+import { normalizeInvoiceNumber, validateInvoice, safeCsv } from './invoice.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function applyLocalEnvironment(text, environment=process.env) {
@@ -32,6 +32,10 @@ async function loadLocalEnvironment() {
 const MAX_BYTES = 10 * 1024 * 1024;
 const N8N_INVOICE_WEBHOOK_HOST = 'jastpss.app.n8n.cloud';
 const mime = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml'};
+function normalizeGstPercent(value) {
+  const percent=typeof value==='string'?value.trim().replace(/%\s*$/,''):value;
+  return normalizeInvoiceNumber(percent);
+}
 const securityHeaders = {
   'Cache-Control':'no-store',
   'X-Content-Type-Options':'nosniff',
@@ -76,12 +80,25 @@ export function normalize(result) {
   const inv = result && typeof result === 'object' ? result : {};
   // Accept a common model synonym as a fallback, while the prompt requires `items`.
   const sourceItems = Array.isArray(inv.items) ? inv.items : Array.isArray(inv.line_items) ? inv.line_items : [];
-  return {
+  const normalized={
     supplier: String(inv.supplier ?? ''), invoice_number: String(inv.invoice_number ?? ''),
-    date: String(inv.date ?? ''), currency: String(inv.currency ?? 'INR'),
-    subtotal: inv.subtotal ?? null, tax: inv.tax ?? null, total: inv.total ?? null,
-    items: sourceItems.slice(0,100).map(x => ({description:String(x.description ?? ''),quantity:x.quantity ?? null,unit_price:x.unit_price ?? null,amount:x.amount ?? null,...(x.gst_percent!==undefined?{gst_percent:x.gst_percent}:{})}))
+    date: String(inv.date ?? ''), currency: String(inv.currency ?? ''),
+    subtotal: normalizeInvoiceNumber(inv.subtotal ?? null),
+    discount: normalizeInvoiceNumber(inv.discount ?? null),
+    tax: normalizeInvoiceNumber(inv.tax ?? inv.gst_total ?? null),
+    total: normalizeInvoiceNumber(inv.total ?? inv.grand_total ?? null),
+    items: sourceItems.slice(0,100).map(x => ({
+      description:String(x.description ?? ''),
+      quantity:normalizeInvoiceNumber(x.quantity ?? x.qty ?? null),
+      unit_price:normalizeInvoiceNumber(x.unit_price ?? x.rate ?? null),
+      amount:normalizeInvoiceNumber(x.amount ?? null),
+      ...(x.gst_percent!==undefined?{gst_percent:normalizeGstPercent(x.gst_percent)}:{})
+    }))
   };
+  for (const key of ['gst_total','round_off','grand_total','calculated_subtotal','calculated_gst_exclusive']) {
+    if (inv[key]!==undefined) normalized[key]=normalizeInvoiceNumber(inv[key]);
+  }
+  return normalized;
 }
 export function classifyGeminiFailure(httpStatus, raw, model) {
   let provider = {};
@@ -183,16 +200,8 @@ function statusField(value,limit=200) {
   return typeof value==='string' ? value.slice(0,limit) : '';
 }
 function invoiceValue(value,limit=200) {
-  if (typeof value==='number' && Number.isFinite(value)) return value;
-  if (typeof value==='string') {
-    const numeric=value.trim().replaceAll(',','');
-    if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(numeric)) {
-      const parsed=Number(numeric);
-      if (Number.isFinite(parsed)) return parsed;
-    }
-    return value.slice(0,limit);
-  }
-  return '';
+  const normalized=normalizeInvoiceNumber(value);
+  return typeof normalized==='string'?normalized.slice(0,limit):normalized??'';
 }
 function normalizeStatusItems(value) {
   if (!Array.isArray(value)) return [];
@@ -201,14 +210,34 @@ function normalizeStatusItems(value) {
     quantity:invoiceValue(item.quantity ?? item.qty),
     unit_price:invoiceValue(item.unit_price ?? item.rate),
     amount:invoiceValue(item.amount),
-    gst_percent:invoiceValue(item.gst_percent)
+    gst_percent:normalizeGstPercent(item.gst_percent)
   }));
+}
+function clearNormalizedNumericWarnings(notes,{subtotal,gstTotal,grandTotal,items}) {
+  const validNumber=value=>typeof value==='number'&&Number.isFinite(value);
+  return notes.split(/;\s*|(?<=\.)\s+|\r?\n/).filter(note=>{
+    const text=note.trim();
+    if (/^gst total is missing\.?$/i.test(text)&&validNumber(gstTotal)) return false;
+    if (/^subtotal is invalid\.?$/i.test(text)&&validNumber(subtotal)) return false;
+    if (/^gst total is invalid\.?$/i.test(text)&&validNumber(gstTotal)) return false;
+    if (/^grand total is invalid\.?$/i.test(text)&&validNumber(grandTotal)) return false;
+    const itemWarning=text.match(/^item\s+(\d+)\s+(rate|amount)\s+is invalid\.?$/i);
+    if (itemWarning) {
+      const item=items[Number(itemWarning[1])-1];
+      const value=itemWarning[2].toLowerCase()==='rate'?item?.unit_price:item?.amount;
+      if (validNumber(value)) return false;
+    }
+    return true;
+  }).join('; ').trim();
 }
 export function normalizeSubmissionStatus(payload,submissionId) {
   if (!payload || typeof payload!=='object' || typeof payload.found!=='boolean') throw new Error('Invalid status response');
   if (payload.submission_id && payload.submission_id!==submissionId) throw new Error('Mismatched status response');
   const gstTotal=invoiceValue(payload.gst_total ?? payload.tax);
   const validationNotes=statusField(payload.validation_notes,1000);
+  const subtotal=invoiceValue(payload.subtotal);
+  const grandTotal=invoiceValue(payload.grand_total ?? payload.total);
+  const items=normalizeStatusItems(payload.items);
   const normalized={
     found:payload.found,
     submission_id:submissionId,
@@ -219,17 +248,18 @@ export function normalizeSubmissionStatus(payload,submissionId) {
     gstin:statusField(payload.gstin,80),
     payment_mode:statusField(payload.payment_mode,80),
     currency:statusField(payload.currency,12),
-    subtotal:invoiceValue(payload.subtotal),
+    subtotal,
+    discount:invoiceValue(payload.discount),
     tax:invoiceValue(payload.tax ?? payload.gst_total),
     total:invoiceValue(payload.total ?? payload.grand_total),
     gst_total:gstTotal,
     round_off:invoiceValue(payload.round_off),
-    grand_total:invoiceValue(payload.grand_total ?? payload.total),
+    grand_total:grandTotal,
     calculated_subtotal:invoiceValue(payload.calculated_subtotal),
     calculated_gst_exclusive:invoiceValue(payload.calculated_gst_exclusive),
-    items:normalizeStatusItems(payload.items),
+    items,
     validation_status:statusField(payload.validation_status,80),
-    validation_notes:typeof gstTotal==='number' ? validationNotes.split(/(?<=[.;])\s+|\r?\n/).filter(note=>!/^gst total is missing\.?$/i.test(note.trim())).join(' ').trim() : validationNotes,
+    validation_notes:clearNormalizedNumericWarnings(validationNotes,{subtotal,gstTotal,grandTotal,items}),
     review_status:statusField(payload.review_status,80),
     message:statusField(payload.message)
   };

@@ -2,6 +2,9 @@ export const LAST_SUBMISSION_STORAGE_KEY='bill-ai:last-submission-id';
 export const LAST_DUPLICATE_SUBMISSION_STORAGE_KEY='bill-ai:last-duplicate-submission-id';
 export const DUPLICATE_SUBMISSION_MESSAGE='Duplicate bill detected — this invoice has already been submitted. No duplicate record was created.';
 
+export function statusWarningText(status) {
+  return typeof status?.validation_notes==='string'?status.validation_notes:'';
+}
 export function parseInvoiceNumber(value) {
   if (typeof value==='number') return Number.isFinite(value) ? value : '';
   if (typeof value!=='string') return '';
@@ -27,6 +30,7 @@ export function restoredInvoiceFields(status) {
     payment_mode:status.payment_mode,
     currency:status.currency,
     subtotal:parseInvoiceNumber(status.subtotal),
+    discount:parseInvoiceNumber(status.discount),
     tax:parseInvoiceNumber(status.gst_total ?? status.tax),
     round_off:parseInvoiceNumber(status.round_off),
     total:parseInvoiceNumber(status.grand_total ?? status.total)
@@ -85,10 +89,10 @@ export async function restoreSubmissionState({storage=globalThis.localStorage,fe
 function init() {
   const $=id=>document.getElementById(id);
   let file=null, rows=[];
-  const fields=['supplier','invoice_number','date','currency','subtotal','tax','total'];
+  const fields=['supplier','invoice_number','date','currency','subtotal','discount','tax','round_off','total'];
   const msg=(id,text)=>{$(id).textContent=text};
   const setEmpty=text=>{$('review').hidden=true;$('empty').hidden=false;$('empty').textContent=text};
-  const getInvoice=()=>{const invoice={};for(const k of fields) invoice[k]=['subtotal','tax','total'].includes(k)?num($(k).value):$(k).value.trim();invoice.items=rows.map(r=>({description:r.description,quantity:num(r.quantity),unit_price:num(r.unit_price),amount:num(r.amount),gst_percent:gstRateForStorage(r.gst_percent)}));return invoice};
+  const getInvoice=()=>{const invoice={};for(const k of fields) invoice[k]=['subtotal','discount','tax','round_off','total'].includes(k)?num($(k).value):$(k).value.trim();invoice.items=rows.map(r=>({description:r.description,quantity:num(r.quantity),unit_price:num(r.unit_price),amount:num(r.amount),gst_percent:gstRateForStorage(r.gst_percent)}));return invoice};
   const num=v=>v===''||v===null||v===undefined?null:Number(v);
   const setFile=f=>{if(!f)return;if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(f.type)){msg('message','Please choose JPG, PNG, WebP or PDF.');return}if(f.size>10*1024*1024){msg('message','The file must be smaller than 10 MB.');return}file=f;$('filename').textContent=f.name;$('extract').disabled=false;msg('message','')};
   $('file').addEventListener('change',e=>setFile(e.target.files[0]));
@@ -130,7 +134,7 @@ function init() {
     $('review').hidden=false;
     $('empty').hidden=true;
     $('duplicate-warning').hidden=true;
-    const notes=status.validation_notes||'';
+    const notes=statusWarningText(status);
     $('warnings').textContent=notes;
     $('warnings').hidden=!notes;
   };

@@ -13,18 +13,20 @@ return (invoice.items.length ? invoice.items : [{}]).map(item => ({json: {
   supplier: invoice.supplier || '',
   invoice_number: invoice.invoice_number || '',
   date: invoice.date || '',
-  currency: invoice.currency || 'INR',
+  currency: invoice.currency ?? '',
   description: item.description || '',
   quantity: item.quantity ?? '',
   unit_price: item.unit_price ?? '',
   amount: item.amount ?? '',
   subtotal: invoice.subtotal ?? '',
+  discount: invoice.discount ?? '',
   tax: invoice.tax ?? '',
+  round_off: invoice.round_off ?? '',
   total: invoice.total ?? ''
 }}));
 ```
 
-5. Create a Google Sheet with headers `supplier, invoice_number, date, currency, description, quantity, unit_price, amount, subtotal, tax, total`. In Google Cloud, enable both **Google Sheets API** and **Google Drive API**, configure the OAuth consent screen, then create a **Web application** OAuth client. In its authorized redirect URIs, paste the redirect URL displayed by n8n (normally `http://localhost:5678/rest/oauth2-credential/callback`). In n8n create Google Sheets OAuth2 credentials, enter the client ID and client secret there, sign in, and save. Configure **Append Row** and map header names to Code node fields.
+5. Create a Google Sheet with headers `supplier, invoice_number, date, currency, description, quantity, unit_price, amount, subtotal, discount, tax, round_off, total`. In Google Cloud, enable both **Google Sheets API** and **Google Drive API**, configure the OAuth consent screen, then create a **Web application** OAuth client. In its authorized redirect URIs, paste the redirect URL displayed by n8n (normally `http://localhost:5678/rest/oauth2-credential/callback`). In n8n create Google Sheets OAuth2 credentials, enter the client ID and client secret there, sign in, and save. Configure **Append Row** and map header names to Code node fields.
 6. Test with a *fake sample bill* first, and confirm each item appears as one sheet row.
 
 **Security:** This is a localhost-only demo, not internet-safe. The Webhook Header Auth credential above validates the optional shared secret before the workflow runs. Use a long random value, keep it only in `.env` and n8n Credentials, and rotate it if exposed. If you expose n8n publicly, add authentication, request validation, rate limiting, duplicate prevention, and a private network/TLS setup before going live. n8n URLs/headers are not substitutes for login or business authorization.
