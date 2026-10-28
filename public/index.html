@@ -3,62 +3,89 @@
 
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
     <title>Billflow — Invoice AI Demo</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/style.css">
     <link rel="stylesheet" href="/recovery.css">
 </head>
 
 <body>
+    <a class="skip" href="#main">Skip to content</a>
     <div class="shell">
-        <aside>
-            <div class="brand"><span class="mark">▦</span> billflow <span class="tag">DEMO</span></div>
-            <div class="nav active">◫ &nbsp; Bill processor</div>
-            <div class="asidebottom"><span class="statusdot"></span> Local demo · Private workspace<p>No files are saved
-                    on this server.</p>
+        <aside class="sidebar">
+            <div class="brand"><span class="mark" aria-hidden="true">B</span><span>Billflow</span><span class="tag">Demo</span></div>
+            <nav class="nav" aria-label="Sections">
+                <a href="#upload"><span class="nav-index" aria-hidden="true">1</span>Upload</a>
+                <a href="#review-section"><span class="nav-index" aria-hidden="true">2</span>Review</a>
+                <a href="#history"><span class="nav-index" aria-hidden="true">3</span>History</a>
+            </nav>
+            <div class="sidebar-note"><span class="statusdot" aria-hidden="true"></span>Local demo · Private workspace
+                <p>Uploaded files are not saved. Invoice history is kept in a local file on this server.</p>
             </div>
         </aside>
-        <main>
-            <header>
+        <main id="main">
+            <header class="page-header">
                 <div>
-                    <p class="eyebrow">DOCUMENT AUTOMATION / WORKSPACE</p>
+                    <p class="eyebrow">Document automation</p>
                     <h1>Process a bill</h1>
-                    <p class="muted">Extract the details, review every number, and send clean records forward.</p>
-                </div><span class="pill">01 / First prototype</span>
+                    <p class="lede">Extract the details, review every number, and send clean records forward.</p>
+                </div><span class="pill">Prototype</span>
             </header>
-            <section class="step"><span class="number">01</span>
-                <div class="stepbody">
-                    <h2>Upload your invoice</h2>
-                    <p class="muted small">Printed or handwritten · JPG, PNG, WebP or PDF · up to 10 MB</p><label
-                        class="drop" for="file"><span class="upload-icon">↑</span><b id="filename">Choose a bill or drop
-                            it here</b><small>Images and PDF documents supported</small><input id="file" type="file"
-                            accept="image/jpeg,image/png,image/webp,application/pdf"></label><button id="extract"
-                        class="primary" disabled>Extract bill details <span>→</span></button>
-                    <p id="message" class="feedback" role="status" aria-live="polite"></p>
-                </div>
-            </section>
-            <section class="step"><span class="number">02</span>
-                <div class="stepbody">
-                    <div class="sectionhead">
+
+            <section class="card" id="upload" aria-labelledby="upload-title">
+                <div class="card-head">
+                    <div class="card-title"><span class="step-index" aria-hidden="true">1</span>
                         <div>
-                            <h2>Review extracted details</h2>
-                            <p class="muted small">AI can make mistakes. Verify against the original bill.</p>
-                        </div><span id="state" class="state">Not processed</span>
+                            <h2 id="upload-title">Upload your invoice</h2>
+                            <p class="subtle">Printed or handwritten · JPG, PNG, WebP or PDF · up to 10 MB</p>
+                        </div>
                     </div>
-                    <div id="review" hidden>
-                        <div id="warnings" class="warning" hidden></div>
-                        <div class="fields"><label>Supplier<input id="supplier"></label><label>Invoice number<input
-                                    id="invoice_number"></label><label>Date (YYYY-MM-DD)<input id="date"
-                                    placeholder="YYYY-MM-DD"></label><label>GSTIN<input id="gstin"></label><label>Payment
-                                mode<input id="payment_mode"></label><label>Currency<input
-                                    id="currency"></label><label>Subtotal<input id="subtotal" type="number"
-                                    step="any"></label><label>Discount<input id="discount" type="number"
-                                    step="any"></label><label>Tax / GST<input id="tax" type="number"
-                                    step="any"></label><label>Round-off<input id="round_off" type="number"
-                                    step="any"></label><label>Total<input id="total" type="number" step="any"></label>
+                </div>
+                <label class="drop" for="file"><span class="upload-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m6.5 9.5 5.5-5.5 5.5 5.5"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg></span><b id="filename">Choose a bill or drop it here</b><small>Images and PDF documents supported</small><input id="file" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"></label>
+                <div class="actions"><button id="extract" class="primary" disabled>Extract bill details <span aria-hidden="true">→</span></button></div>
+                <p id="message" class="feedback" role="status" aria-live="polite"></p>
+            </section>
+
+            <section class="card" id="review-section" aria-labelledby="review-title">
+                <div class="card-head">
+                    <div class="card-title"><span class="step-index" aria-hidden="true">2</span>
+                        <div>
+                            <h2 id="review-title">Review extracted details</h2>
+                            <p class="subtle">AI can make mistakes. Verify against the original bill.</p>
+                        </div>
+                    </div><span id="state" class="state">Not processed</span>
+                </div>
+                <div id="review" hidden>
+                    <div id="warnings" class="callout callout-warning" hidden></div>
+                    <fieldset class="group">
+                        <legend>Invoice details</legend>
+                        <div class="fields">
+                            <label>Supplier<input id="supplier" autocomplete="off"></label>
+                            <label>Invoice number<input id="invoice_number" autocomplete="off"></label>
+                            <label>Date<input id="date" placeholder="YYYY-MM-DD" autocomplete="off"></label>
+                            <label>GSTIN<input id="gstin" autocomplete="off"></label>
+                            <label>Payment mode<input id="payment_mode" autocomplete="off"></label>
+                            <label>Currency<input id="currency" autocomplete="off"></label>
+                        </div>
+                    </fieldset>
+                    <fieldset class="group">
+                        <legend>Amounts</legend>
+                        <div class="fields fields-amounts">
+                            <label>Subtotal<input id="subtotal" type="number" step="any" inputmode="decimal"></label>
+                            <label>Discount<input id="discount" type="number" step="any" inputmode="decimal"></label>
+                            <label>Tax / GST<input id="tax" type="number" step="any" inputmode="decimal"></label>
+                            <label>Round-off<input id="round_off" type="number" step="any" inputmode="decimal"></label>
+                            <label class="field-total">Total<input id="total" type="number" step="any" inputmode="decimal"></label>
+                        </div>
+                    </fieldset>
+                    <div class="group">
+                        <div class="group-head">
+                            <h3>Line items</h3><button class="secondary small-button" id="add" type="button">+ Add row</button>
                         </div>
                         <div class="tablewrap">
-                            <table>
+                            <table class="items-table">
                                 <thead>
                                     <tr>
                                         <th>Description</th>
@@ -66,30 +93,93 @@
                                         <th>Unit price</th>
                                         <th>Amount</th>
                                         <th>GST %</th>
-                                        <th></th>
+                                        <th><span class="visually-hidden">Remove</span></th>
                                     </tr>
                                 </thead>
                                 <tbody id="rows"></tbody>
                             </table>
-                        </div><button class="secondary" id="add">+ Add row</button><label class="check"><input
-                                type="checkbox" id="approved"> I have checked the details against the original
-                            bill.</label>
-                        <div class="actions"><button id="csv" class="secondary" disabled>Download CSV ↓</button><button
-                                id="save" class="primary" disabled>Send to n8n →</button></div>
+                        </div>
                     </div>
-                    <div id="recovery" hidden>
-                        <label for="recovery-id">Have a submission ID? Restore a saved invoice:</label>
-                        <input id="recovery-id" autocomplete="off" spellcheck="false">
-                        <button id="recover" class="secondary" type="button">Restore invoice</button>
-                        <p id="recovery-message" class="feedback" role="status" aria-live="polite"></p>
+                    <div class="approval">
+                        <label class="check"><input type="checkbox" id="approved"><span>I have checked the details against the original bill.</span></label>
+                        <div class="actions"><button id="csv" class="secondary" disabled>Download CSV ↓</button><button id="save" class="primary" disabled>Send to n8n <span aria-hidden="true">→</span></button></div>
                     </div>
-                    <div id="duplicate-warning" class="duplicate-warning" role="status" aria-live="assertive" hidden>
-                        <strong>Duplicate bill detected</strong>
-                        <span>This invoice has already been submitted. No duplicate record was created.</span>
-                    </div>
-                    <p id="empty" class="empty">Your extracted invoice will appear here.</p>
-                    <p id="save-message" class="feedback" role="status" aria-live="polite"></p>
                 </div>
+                <div id="recovery" hidden>
+                    <label for="recovery-id">Have a submission ID? Restore a saved invoice</label>
+                    <div class="recovery-row"><input id="recovery-id" autocomplete="off" spellcheck="false" placeholder="Submission ID"><button id="recover" class="secondary" type="button">Restore invoice</button></div>
+                    <p id="recovery-message" class="feedback" role="status" aria-live="polite"></p>
+                </div>
+                <div id="duplicate-warning" class="callout callout-warning duplicate-warning" role="status" aria-live="assertive" hidden>
+                    <strong>Duplicate bill detected</strong>
+                    <span>This invoice has already been submitted. No duplicate record was created.</span>
+                </div>
+                <p id="empty" class="empty">Your extracted invoice will appear here.</p>
+                <p id="save-message" class="feedback" role="status" aria-live="polite"></p>
+            </section>
+
+            <section class="card" id="history" aria-labelledby="history-title">
+                <div class="card-head">
+                    <div class="card-title"><span class="step-index" aria-hidden="true">3</span>
+                        <div>
+                            <h2 id="history-title">Invoice history</h2>
+                            <p class="subtle">Saved and approved invoices. CSV exports include every line item.</p>
+                        </div>
+                    </div><button id="history-refresh" class="secondary small-button" type="button">Refresh</button>
+                </div>
+                <details class="csv-format" id="csv-format">
+                    <summary><span class="csv-format-title">CSV format</span><span id="csv-format-name" class="csv-format-name">Default</span><span id="csv-format-dirty" class="csv-format-dirty" hidden>Unsaved changes</span></summary>
+                    <div class="csv-format-body">
+                        <p class="subtle">Choose, order and rename columns. Applies to every CSV download, including the review step. Presets are saved in this browser.</p>
+                        <div class="preset-bar">
+                            <label class="preset-field">Preset<select id="csv-preset"></select></label>
+                            <label class="preset-field">Preset name<input id="csv-preset-name" maxlength="60" autocomplete="off" placeholder="e.g. Tally import"></label>
+                            <div class="actions preset-actions">
+                                <button id="csv-preset-save" class="primary small-button" type="button">Save</button>
+                                <button id="csv-preset-save-as" class="secondary small-button" type="button">Save as new</button>
+                                <button id="csv-preset-rename" class="secondary small-button" type="button">Rename</button>
+                                <button id="csv-preset-delete" class="secondary small-button danger-text" type="button">Delete</button>
+                            </div>
+                        </div>
+                        <p id="csv-preset-message" class="feedback" role="status" aria-live="polite"></p>
+                        <div class="group-head csv-columns-head">
+                            <h3>Columns</h3><button id="csv-reset" class="secondary small-button" type="button">Reset to default</button>
+                        </div>
+                        <ol id="csv-columns" class="csv-columns"></ol>
+                        <div class="group-head csv-columns-head">
+                            <h3>Preview</h3><span id="csv-preview-note" class="subtle"></span>
+                        </div>
+                        <div class="tablewrap csv-preview-wrap">
+                            <table class="csv-preview" id="csv-preview"></table>
+                        </div>
+                    </div>
+                </details>
+                <div id="history-table" hidden>
+                    <div class="history-toolbar">
+                        <label class="check select-all"><input type="checkbox" id="history-select-all"><span>Select all</span></label>
+                        <div class="actions history-actions"><button id="history-selected" class="secondary" type="button" disabled>Download selected ↓</button><button
+                                id="history-all" class="primary" type="button" disabled>Download all CSV ↓</button></div>
+                    </div>
+                    <div class="tablewrap">
+                        <table class="history-table">
+                            <thead>
+                                <tr>
+                                    <th><span class="visually-hidden">Select</span></th>
+                                    <th>Supplier</th>
+                                    <th>Invoice number</th>
+                                    <th>Date</th>
+                                    <th class="numeric">Total</th>
+                                    <th class="numeric">Items</th>
+                                    <th>Status</th>
+                                    <th><span class="visually-hidden">Download</span></th>
+                                </tr>
+                            </thead>
+                            <tbody id="history-rows"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <p id="history-empty" class="empty">Saved invoices will appear here.</p>
+                <p id="history-message" class="feedback" role="status" aria-live="polite"></p>
             </section>
             <footer>Billflow proof of concept · Not an accounting system · Human approval required</footer>
         </main>

@@ -429,3 +429,26 @@ test('loads the dedicated webhook secret and supports the existing server-side n
   applyLocalEnvironment('N8N_SHARED_SECRET=example-value\n',legacy);
   assert.equal(legacy.BILL_AI_WEBHOOK_SECRET,'example-value');
 });
+test('custom CSV columns select, reorder and rename fields across invoices and line items',async()=>{
+  const {csvColumns,safeCsvMany,DEFAULT_CSV_COLUMNS,CSV_FIELDS}=await import('./invoice.js');
+  const invoices=[
+    {supplier:'EcoMart',invoice_number:'E-1',date:'2026-08-24',currency:'$',subtotal:180,discount:null,tax:0,round_off:null,total:180,items:[{description:'LED',quantity:40,unit_price:3.25,amount:130},{description:'Cable',quantity:2,unit_price:25,amount:50}]},
+    {supplier:'GreenLeaf',invoice_number:'G-7',date:'',currency:'INR',subtotal:null,discount:null,tax:null,round_off:null,total:null,items:[]}
+  ];
+  const columns=csvColumns([{key:'invoice_number',label:' Bill No '},{key:'line_number',label:'Line'},{key:'description',label:'Item'},{key:'total',label:'Grand total'}]);
+  assert.deepEqual(columns.map(c=>c.label),['Bill No','Line','Item','Grand total']);
+  assert.equal(safeCsvMany(invoices,columns),['"Bill No","Line","Item","Grand total"','"E-1","1","LED","180"','"E-1","2","Cable","180"','"G-7","","",""'].join('\r\n')+'\r\n');
+  assert.equal(csvColumns(undefined),DEFAULT_CSV_COLUMNS);
+  assert.equal(safeCsvMany(invoices,DEFAULT_CSV_COLUMNS),safeCsvMany(invoices));
+  assert.deepEqual(CSV_FIELDS.slice(0,13),DEFAULT_CSV_COLUMNS.map(c=>c.key));
+});
+test('custom CSV headers and values keep formula-injection escaping',async()=>{
+  const {csvColumns,safeCsvMany}=await import('./invoice.js');
+  const csv=safeCsvMany([{supplier:'+Evil',invoice_number:'1',items:[{description:'@SUM(A1)',quantity:1,unit_price:1,amount:1}]}],csvColumns([{key:'supplier',label:'=HYPERLINK("x")'},{key:'description',label:'-Item'}]));
+  assert.equal(csv.split('\r\n')[0],'"\'=HYPERLINK(""x"")","\'-Item"');
+  assert.equal(csv.split('\r\n')[1],'"\'+Evil","\'@SUM(A1)"');
+});
+test('rejects invalid CSV column mappings',async()=>{
+  const {csvColumns}=await import('./invoice.js');
+  for (const bad of [[],'supplier',[{key:'secret',label:'x'}],[{key:'supplier',label:''}],[{key:'supplier',label:'a'},{key:'supplier',label:'b'}],[{key:'__proto__',label:'x'}],[{key:'supplier',label:'x'.repeat(101)}],[null]]) assert.equal(csvColumns(bad),null,JSON.stringify(bad));
+});

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {displayGstPercent,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,statusWarningText,submissionResultKind} from './app.js';
+import {CSV_FIELDS,DEFAULT_CSV_COLUMNS} from '../server/invoice.js';
+import {addCsvPreset,CSV_FIELD_OPTIONS,CSV_PRESETS_STORAGE_KEY,csvColumnsFromMapping,csvMappingFromColumns,defaultCsvMapping,deleteCsvPreset,moveCsvColumn,parseCsv,readCsvPresets,renameCsvPreset,sameCsvColumns,updateCsvPreset,writeCsvPresets,displayGstPercent,historyCsvFilename,historyExportBody,historyTotalText,stateTone,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,statusWarningText,submissionResultKind} from './app.js';
 
 const storage=initial=>{const values=new Map(Object.entries(initial||{}));return {getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)}};
 
@@ -144,4 +145,79 @@ test('restores GST percentage values into the line-item GST input mapping',()=>{
     {description:'Paper',quantity:2,unit_price:50,amount:100,gst_percent:18},
     {description:'Ink',quantity:'',unit_price:'',amount:'',gst_percent:12}
   ]);
+});
+test('builds history CSV export requests for all, selected, and one invoice',()=>{
+  const id='123e4567-e89b-42d3-a456-426614174000';
+  assert.deepEqual(historyExportBody(),{});
+  assert.deepEqual(historyExportBody([id,id,'../bad']),{ids:[id]});
+  assert.equal(historyCsvFilename([{invoice_number:'ECO/2026 0824'}]),'invoice-ECO_2026_0824.csv');
+  assert.equal(historyCsvFilename([{invoice_number:'',supplier:''}]),'invoice.csv');
+  assert.equal(historyCsvFilename([{},{}]),'invoices.csv');
+  assert.equal(historyTotalText({currency:'$',total:1191.62}),'$1191.62');
+  assert.equal(historyTotalText({currency:'INR',total:125}),'INR 125');
+  assert.equal(historyTotalText({currency:'INR',total:''}),'—');
+});
+test('maps review status labels to visual tones',()=>{
+  assert.equal(stateTone('Not processed'),'neutral');
+  assert.equal(stateTone('Loading…'),'progress');
+  assert.equal(stateTone('Processing'),'progress');
+  assert.equal(stateTone('Duplicate'),'warning');
+  assert.equal(stateTone('Status unavailable'),'danger');
+  assert.equal(stateTone('saved · Approved · valid'),'success');
+  assert.equal(stateTone('saved · Needs Review · warning'),'warning');
+  assert.equal(stateTone('Sent to n8n'),'success');
+});
+test('CSV field options match the server and default to the existing format',()=>{
+  assert.deepEqual(CSV_FIELD_OPTIONS.map(option=>option.key),CSV_FIELDS);
+  assert.deepEqual(csvColumnsFromMapping(defaultCsvMapping()),DEFAULT_CSV_COLUMNS);
+});
+test('maps, reorders and renames CSV columns',()=>{
+  let mapping=defaultCsvMapping();
+  mapping=moveCsvColumn(mapping,4,-4);
+  assert.equal(mapping[0].key,'description');
+  assert.equal(moveCsvColumn(mapping,0,-1),mapping);
+  mapping=mapping.map(column=>column.key==='description'?{...column,label:'  Item  '}:column.key==='date'?{...column,include:false}:column.key==='currency'?{...column,label:'   '}:column);
+  const columns=csvColumnsFromMapping(mapping);
+  assert.equal(columns[0].label,'Item');
+  assert.equal(columns.find(column=>column.key==='currency').label,'currency');
+  assert.equal(columns.some(column=>column.key==='date'),false);
+  const restored=csvMappingFromColumns(columns);
+  assert.deepEqual(csvColumnsFromMapping(restored),columns);
+  assert.deepEqual(restored.filter(column=>!column.include).map(column=>column.key).sort(),['date','line_number']);
+  assert.equal(sameCsvColumns(columns,csvColumnsFromMapping(restored)),true);
+  assert.equal(sameCsvColumns(columns,DEFAULT_CSV_COLUMNS),false);
+});
+test('saves, reuses, renames and deletes CSV presets in browser storage',()=>{
+  const browserStorage=storage();
+  assert.deepEqual(readCsvPresets(browserStorage),{presets:[],activeId:null});
+  const columns=[{key:'invoice_number',label:'Bill'},{key:'total',label:'Total'}];
+  let result=addCsvPreset({presets:[],activeId:null},'  Tally  ',columns,'p1');
+  assert.equal(result.state.activeId,'p1');
+  assert.equal(result.state.presets[0].name,'Tally');
+  assert.equal(addCsvPreset(result.state,'tally',columns).error,'A preset with this name already exists.');
+  assert.equal(addCsvPreset(result.state,' ',columns).error,'Enter a preset name.');
+  assert.equal(addCsvPreset(result.state,'Empty',[]).error,'Choose at least one column.');
+  result=addCsvPreset(result.state,'Zoho',[{key:'supplier',label:'Vendor'}],'p2');
+  assert.ok(writeCsvPresets(result.state,browserStorage));
+  const reloaded=readCsvPresets(browserStorage);
+  assert.deepEqual(reloaded,result.state);
+  assert.equal(renameCsvPreset(reloaded,'p2','Tally').error,'A preset with this name already exists.');
+  let next=renameCsvPreset(reloaded,'p2','Zoho Books').state;
+  assert.equal(next.presets[1].name,'Zoho Books');
+  next=updateCsvPreset(next,'p2',[{key:'supplier',label:'Vendor name'},{key:'amount',label:'Amt'}]).state;
+  assert.equal(next.presets[1].columns.length,2);
+  next=deleteCsvPreset(next,'p2').state;
+  assert.deepEqual(next.presets.map(preset=>preset.id),['p1']);
+  assert.equal(next.activeId,null);
+  assert.equal(deleteCsvPreset(next,'missing').error,'Select a saved preset first.');
+});
+test('ignores corrupt or tampered CSV preset storage',()=>{
+  assert.deepEqual(readCsvPresets(storage({[CSV_PRESETS_STORAGE_KEY]:'{oops'})),{presets:[],activeId:null});
+  const tampered=readCsvPresets(storage({[CSV_PRESETS_STORAGE_KEY]:JSON.stringify({activeId:'gone',presets:[{id:'a',name:'Bad',columns:[{key:'secret',label:'x'}]},{id:'b',name:'Ok',columns:[{key:'total',label:'T'},{key:'total',label:'dup'},{key:'nope'}]}]})}));
+  assert.deepEqual(tampered,{presets:[{id:'b',name:'Ok',columns:[{key:'total',label:'T'}]}],activeId:null});
+  assert.deepEqual(readCsvPresets({getItem(){throw new Error('blocked')}}),{presets:[],activeId:null});
+  assert.equal(writeCsvPresets({presets:[],activeId:null},{setItem(){throw new Error('full')}}),false);
+});
+test('parses server CSV for the preview, including quotes, commas and the BOM',()=>{
+  assert.deepEqual(parseCsv('﻿"A","B ""x"""\r\n"1,2","\'=Cable"\r\n'),[['A','B "x"'],['1,2',"'=Cable"]]);
 });

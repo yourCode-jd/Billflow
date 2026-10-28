@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
-import { normalizeInvoiceNumber, validateInvoice, safeCsv } from './invoice.js';
+import { normalizeInvoiceNumber, validateInvoice, safeCsv, safeCsvMany, csvColumns } from './invoice.js';
+import { createHistoryStore, historySummary } from './history.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function applyLocalEnvironment(text, environment=process.env) {
@@ -306,7 +307,14 @@ function statusFailure(status) {
   if (status>=500) return {code:'N8N_STATUS_UNAVAILABLE',error:'The submission-status service is temporarily unavailable.'};
   return {code:'N8N_STATUS_REJECTED',error:'The submission-status service rejected this request.'};
 }
-async function submissionStatus(req,res,submissionId) {
+async function recordStatusInHistory(history,status) {
+  // n8n reports found:true when only the Invoice Reviews row matches the submission_id (Invoices rows without it).
+  // That response has no line items or amounts, so it is not invoice data and must not create an empty history record.
+  if (!status.found||status.duplicate===true||!status.items.length) return;
+  try { await history.upsert({submissionId:status.submission_id,source:'n8n',invoice:normalize({...status,supplier:status.supplier_name})}); }
+  catch { console.warn('Could not record invoice history', {submission_id:status.submission_id}); }
+}
+async function submissionStatus(req,res,submissionId,history) {
   requireSameOrigin(req);
   if (!isSubmissionId(submissionId)) return reply(res,400,{code:'INVALID_SUBMISSION_ID',error:'Invalid submission ID.'});
   if (!process.env.BILL_AI_WEBHOOK_SECRET) return reply(res,503,{code:'N8N_WEBHOOK_SECRET_MISSING',error:'Invoice processing is not configured on this server.'});
@@ -322,43 +330,73 @@ async function submissionStatus(req,res,submissionId) {
   if (!response.ok) return reply(res,502,statusFailure(response.status));
   let payload;
   try { payload=JSON.parse(await response.text()); } catch { return reply(res,502,{code:'N8N_STATUS_INVALID_RESPONSE',error:'The submission-status service returned an invalid response.'}); }
-  try { return reply(res,200,normalizeSubmissionStatus(payload,submissionId)); } catch { return reply(res,502,{code:'N8N_STATUS_INVALID_RESPONSE',error:'The submission-status service returned an invalid response.'}); }
+  let status;
+  try { status=normalizeSubmissionStatus(payload,submissionId); } catch { return reply(res,502,{code:'N8N_STATUS_INVALID_RESPONSE',error:'The submission-status service returned an invalid response.'}); }
+  await recordStatusInHistory(history,status);
+  return reply(res,200,status);
 }
-async function save(req,res) {
+async function save(req,res,history) {
   requireJson(req); requireSameOrigin(req);
   const input=await readJson(req);
   const invoice=normalize(input.invoice);
   const warnings=validateInvoice(invoice);
   if (warnings.length && input.confirmedWarnings !== true) return reply(res,422,{error:'Review validation warnings and confirm before saving.',warnings});
   if (!invoice.invoice_number && !invoice.supplier) return reply(res,422,{error:'Supplier or invoice number is required.'});
+  // Record the approved version before forwarding, so history persists even when n8n is unavailable.
+  await history.upsert({submissionId:isSubmissionId(input.submission_id)?input.submission_id:null,source:'approved',invoice});
   const url=process.env.N8N_WEBHOOK_URL;
-  if (!url) return reply(res,409,{error:'n8n webhook not configured. You can download the CSV now or set N8N_WEBHOOK_URL.'});
+  if (!url) return reply(res,409,{history_saved:true,error:'n8n webhook not configured. You can download the CSV now or set N8N_WEBHOOK_URL.'});
   let parsed;
-  try { parsed=new URL(url); } catch { return reply(res,500,{error:'Invalid n8n webhook URL.'}); }
+  try { parsed=new URL(url); } catch { return reply(res,500,{history_saved:true,error:'Invalid n8n webhook URL.'}); }
   // Local-only default avoids sending client bills to arbitrary external destinations accidentally.
-  if (!['http:','https:'].includes(parsed.protocol) || parsed.username || parsed.password || !['localhost','127.0.0.1','[::1]'].includes(parsed.hostname)) return reply(res,403,{error:'Remote webhook blocked in demo. Use a local HTTP(S) n8n URL.'});
+  if (!['http:','https:'].includes(parsed.protocol) || parsed.username || parsed.password || !['localhost','127.0.0.1','[::1]'].includes(parsed.hostname)) return reply(res,403,{history_saved:true,error:'Remote webhook blocked in demo. Use a local HTTP(S) n8n URL.'});
   try {
     const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json',...(process.env.N8N_SHARED_SECRET?{'x-bill-agent-secret':process.env.N8N_SHARED_SECRET}:{})},body:JSON.stringify({invoice,approved_at:new Date().toISOString(),warnings_acknowledged:warnings.length>0}),signal:AbortSignal.timeout(15000)});
-    if (!r.ok) return reply(res,502,{error:`n8n returned ${r.status}; check whether webhook is active and sheet is connected.`});
-    return reply(res,200,{ok:true,message:'Approved invoice sent to n8n.'});
-  } catch { return reply(res,502,{error:'Cannot reach n8n. Check its webhook URL and whether n8n is running.'}); }
+    if (!r.ok) return reply(res,502,{history_saved:true,error:`n8n returned ${r.status}; check whether webhook is active and sheet is connected.`});
+    return reply(res,200,{history_saved:true,ok:true,message:'Approved invoice sent to n8n.'});
+  } catch { return reply(res,502,{history_saved:true,error:'Cannot reach n8n. Check its webhook URL and whether n8n is running.'}); }
 }
-export function createServer() {
+async function listHistory(req,res,history) {
+  requireSameOrigin(req);
+  return reply(res,200,{invoices:(await history.list()).map(historySummary)});
+}
+async function historyCsv(req,res,history) {
+  requireJson(req); requireSameOrigin(req);
+  const data=await readJson(req);
+  const columns=csvColumns(data.columns);
+  if (!columns) return reply(res,400,{error:'Invalid CSV column mapping.'});
+  let records;
+  if (data.ids===undefined) records=[...await history.list()].reverse();
+  else {
+    if (!Array.isArray(data.ids)||!data.ids.length||data.ids.length>1000||!data.ids.every(isSubmissionId)) return reply(res,400,{error:'Select one or more saved invoices.'});
+    records=await history.get([...new Set(data.ids)]);
+    if (records.includes(null)) return reply(res,404,{error:'One or more selected invoices are no longer in history.'});
+  }
+  if (!records.length) return reply(res,404,{error:'No saved invoices to export.'});
+  const csv=safeCsvMany(records.map(record=>record.invoice),columns);
+  res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="invoices.csv"',...securityHeaders}); return res.end('\uFEFF'+csv);
+}
+export function createServer({history=createHistoryStore()}={}) {
   return http.createServer(async(req,res)=>{
   try {
     const requestUrl=new URL(req.url,`http://${req.headers.host||'localhost'}`);
     const statusMatch=requestUrl.pathname.match(/^\/api\/submissions\/([^/]+)\/status$/);
-    if(req.method==='GET' && statusMatch) return await submissionStatus(req,res,decodeURIComponent(statusMatch[1]));
+    if(req.method==='GET' && statusMatch) return await submissionStatus(req,res,decodeURIComponent(statusMatch[1]),history);
+    if(req.method==='GET' && requestUrl.pathname==='/api/invoices') return await listHistory(req,res,history);
+    if(req.method==='POST' && req.url==='/api/invoices/csv') return await historyCsv(req,res,history);
     if(req.method==='POST' && req.url==='/api/extract') return await extract(req,res);
-    if(req.method==='POST' && req.url==='/api/save') return await save(req,res);
+    if(req.method==='POST' && req.url==='/api/save') return await save(req,res,history);
     if(req.method==='POST' && req.url==='/api/csv') {
       requireJson(req); requireSameOrigin(req);
-      const data=await readJson(req); const csv=safeCsv(normalize(data.invoice));
+      const data=await readJson(req); const columns=csvColumns(data.columns);
+      if (!columns) return reply(res,400,{error:'Invalid CSV column mapping.'});
+      const csv=safeCsv(normalize(data.invoice),columns);
       res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="invoice.csv"',...securityHeaders}); return res.end('\uFEFF'+csv);
     }
     if(req.method!=='GET') return reply(res,405,{error:'Method not allowed'});
-    const page = req.url==='/' ? '/index.html' : req.url;
-    if (!['/index.html','/app.js','/style.css','/recovery.css'].includes(page)) return reply(res,404,{error:'Not found'});
+    // Browsers request /favicon.ico by default; serve the same local SVG icon.
+    const page = req.url==='/' ? '/index.html' : req.url==='/favicon.ico' ? '/favicon.svg' : req.url;
+    if (!['/index.html','/app.js','/style.css','/recovery.css','/favicon.svg'].includes(page)) return reply(res,404,{error:'Not found'});
     const buffer=await readFile(resolve(root,'public',page.slice(1)));
     res.writeHead(200,{'Content-Type':mime[extname(page)],...securityHeaders}); res.end(buffer);
   } catch (e) { reply(res,e.status||500,{error:e.status?e.message:'Unexpected server error.'}); }
@@ -367,5 +405,6 @@ export function createServer() {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await loadLocalEnvironment();
   const PORT = Number(process.env.PORT || 3000);
-  createServer().listen(PORT,'127.0.0.1',()=>console.log(`Bill Agent demo: http://localhost:${PORT}`));
+  const historyFile=resolve(root, process.env.BILL_AI_HISTORY_FILE || 'data/invoices.json');
+  createServer({history:createHistoryStore({file:historyFile})}).listen(PORT,'127.0.0.1',()=>console.log(`Bill Agent demo: http://localhost:${PORT}`));
 }

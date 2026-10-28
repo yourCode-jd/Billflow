@@ -73,8 +73,45 @@ const escapeCell = val => {
   if (!numeric&&/^[\s]*[=+\-@\t\r]/.test(v)) v="'"+v; // spreadsheet formula injection defense
   return '"'+v.replaceAll('"','""')+'"';
 };
-export function safeCsv(inv) {
-  const columns=['supplier','invoice_number','date','currency','description','quantity','unit_price','amount','subtotal','discount','tax','round_off','total'];
-  const rows=(inv.items.length? inv.items:[{}]).map(item => [inv.supplier,inv.invoice_number,inv.date,inv.currency,item.description,item.quantity,item.unit_price,item.amount,inv.subtotal,inv.discount,inv.tax,inv.round_off,inv.total]);
-  return [columns,...rows].map(row=>row.map(escapeCell).join(',')).join('\r\n')+'\r\n';
+// Exportable CSV fields. The first 13, in this order, are the default format.
+const CSV_FIELD_VALUES={
+  supplier:inv=>inv.supplier,
+  invoice_number:inv=>inv.invoice_number,
+  date:inv=>inv.date,
+  currency:inv=>inv.currency,
+  description:(inv,item)=>item.description,
+  quantity:(inv,item)=>item.quantity,
+  unit_price:(inv,item)=>item.unit_price,
+  amount:(inv,item)=>item.amount,
+  subtotal:inv=>inv.subtotal,
+  discount:inv=>inv.discount,
+  tax:inv=>inv.tax,
+  round_off:inv=>inv.round_off,
+  total:inv=>inv.total,
+  line_number:(inv,item,index)=>inv.items.length?index+1:''
+};
+export const CSV_FIELDS=Object.keys(CSV_FIELD_VALUES);
+export const DEFAULT_CSV_COLUMNS=CSV_FIELDS.slice(0,13).map(key=>({key,label:key}));
+// Returns validated [{key,label}] columns, the default when omitted, or null when invalid.
+export function csvColumns(columns) {
+  if (columns===undefined||columns===null) return DEFAULT_CSV_COLUMNS;
+  if (!Array.isArray(columns)||!columns.length||columns.length>CSV_FIELDS.length) return null;
+  const keys=new Set();
+  const valid=[];
+  for (const column of columns) {
+    if (!column||typeof column!=='object'||!Object.hasOwn(CSV_FIELD_VALUES,column.key)||keys.has(column.key)) return null;
+    if (typeof column.label!=='string'||!column.label.trim()||column.label.length>100) return null;
+    keys.add(column.key);
+    valid.push({key:column.key,label:column.label.trim()});
+  }
+  return valid;
+}
+export function safeCsv(inv,columns) {
+  return safeCsvMany([inv],columns);
+}
+// One header row, then one row per line item for every invoice (header-only invoices keep a single row).
+// Header labels go through the same escaping as values, so renamed columns cannot inject formulas.
+export function safeCsvMany(invoices,columns=DEFAULT_CSV_COLUMNS) {
+  const rows=invoices.flatMap(inv=>(inv.items.length? inv.items:[{}]).map((item,index)=>columns.map(column=>CSV_FIELD_VALUES[column.key](inv,item,index))));
+  return [columns.map(column=>column.label),...rows].map(row=>row.map(escapeCell).join(',')).join('\r\n')+'\r\n';
 }
