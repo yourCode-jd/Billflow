@@ -25,6 +25,7 @@ Open `http://localhost:3000`.
 ## Invoice history
 - Stored in a local JSON file, `data/invoices.json` by default (set `BILL_AI_HISTORY_FILE` to change it). `data/` is git-ignored; back the file up if the history matters.
 - An invoice is added when the dashboard's status lookup reports a saved, non-duplicate invoice from n8n, or when you approve it with **Send to n8n**. The approved version is kept even if n8n is not configured or unreachable.
+- After an upload, the dashboard re-checks the submission automatically: at most 12 checks over about 95 seconds, stopping as soon as the invoice is found or marked duplicate. If processing takes longer, it shows **Still processing** and keeps the submission ID ready for **Restore invoice**.
 - There is one record per submission ID. Re-approving or re-checking an invoice updates its record instead of adding another; an approved version is never replaced by a later status lookup. Approvals without a submission ID are matched by supplier and invoice number.
 - **Download CSV** in the review step does not add to history. Invoices processed in n8n but never opened in this dashboard do not appear; history is not synced from Google Sheets.
 - History CSVs use the same columns as the single-invoice CSV, with the same formula-injection escaping. There is no delete, edit, search or paging in the history panel.

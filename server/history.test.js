@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import http from 'node:http';
 import { createHistoryStore } from './history.js';
 import { safeCsv, safeCsvMany } from './invoice.js';
 import { createServer } from './index.js';
@@ -204,4 +205,25 @@ test('status found only through the review row (no invoice line items) does not 
   assert.deepEqual(records[0].invoice.items.map(item=>[item.description,item.quantity,item.unit_price,item.amount]),[['LED Bulb',40,3.25,130],['Cable',2,25,50]]);
   assert.equal(records[0].invoice.subtotal,1153.5);
   assert.equal(records[0].invoice.total,1191.62);
+});
+test('an unreadable history file does not block forwarding an approved invoice to n8n',async t=>{
+  const file=await tempFile(t);
+  await createHistoryStore({file}).upsert({submissionId:idB,source:'n8n',invoice:invoiceB});
+  await writeFile(file,'{corrupt');
+  let forwarded=null;
+  const n8n=http.createServer((req,res)=>{let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{forwarded=JSON.parse(body);res.end('{}')})});
+  await new Promise(resolve=>n8n.listen(0,'127.0.0.1',resolve));
+  const originalWebhook=process.env.N8N_WEBHOOK_URL;
+  process.env.N8N_WEBHOOK_URL=`http://127.0.0.1:${n8n.address().port}/webhook/approved`;
+  t.after(async()=>{
+    await new Promise(resolve=>n8n.close(resolve));
+    if(originalWebhook===undefined) delete process.env.N8N_WEBHOOK_URL; else process.env.N8N_WEBHOOK_URL=originalWebhook;
+  });
+  const base=await startServer(t,createHistoryStore({file}));
+  const r=await postJson(`${base}/api/save`,{invoice:invoiceA,confirmedWarnings:true,submission_id:idA});
+  assert.equal(r.status,200);
+  assert.deepEqual(await r.json(),{history_saved:false,ok:true,message:'Approved invoice sent to n8n.'});
+  assert.equal(forwarded.invoice.invoice_number,'ECO-2026-0824');
+  assert.equal(forwarded.invoice.items.length,2);
+  assert.equal(await readFile(file,'utf8'),'{corrupt');
 });

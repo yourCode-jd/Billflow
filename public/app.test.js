@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {CSV_FIELDS,DEFAULT_CSV_COLUMNS} from '../server/invoice.js';
-import {addCsvPreset,CSV_FIELD_OPTIONS,CSV_PRESETS_STORAGE_KEY,csvColumnsFromMapping,csvMappingFromColumns,defaultCsvMapping,deleteCsvPreset,moveCsvColumn,parseCsv,readCsvPresets,renameCsvPreset,sameCsvColumns,updateCsvPreset,writeCsvPresets,displayGstPercent,historyCsvFilename,historyExportBody,historyTotalText,stateTone,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,statusWarningText,submissionResultKind} from './app.js';
+import {pollSubmissionStatus,STATUS_POLL_DELAYS_MS,addCsvPreset,CSV_FIELD_OPTIONS,CSV_PRESETS_STORAGE_KEY,csvColumnsFromMapping,csvMappingFromColumns,defaultCsvMapping,deleteCsvPreset,moveCsvColumn,parseCsv,readCsvPresets,renameCsvPreset,sameCsvColumns,updateCsvPreset,writeCsvPresets,displayGstPercent,historyCsvFilename,historyExportBody,historyTotalText,stateTone,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,statusWarningText,submissionResultKind} from './app.js';
 
 const storage=initial=>{const values=new Map(Object.entries(initial||{}));return {getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)}};
 
@@ -220,4 +220,59 @@ test('ignores corrupt or tampered CSV preset storage',()=>{
 });
 test('parses server CSV for the preview, including quotes, commas and the BOM',()=>{
   assert.deepEqual(parseCsv('﻿"A","B ""x"""\r\n"1,2","\'=Cable"\r\n'),[['A','B "x"'],['1,2',"'=Cable"]]);
+});
+const pollId='123e4567-e89b-42d3-a456-426614174000';
+const scripted=responses=>{let calls=0;return {fetchStatus:async id=>{assert.equal(id,pollId);const next=responses[Math.min(calls++,responses.length-1)];if(next instanceof Error)throw next;return next},calls:()=>calls}};
+const fakeSleep=()=>{const waits=[];return {sleep:async ms=>{waits.push(ms)},waits}};
+test('upload follow-up re-checks until the invoice is found, with backoff',async()=>{
+  const found={found:true,submission_id:pollId,items:[{description:'LED'}]};
+  const n8n=scripted([{found:false},{found:false},{found:false},found]);
+  const clock=fakeSleep();const progress=[];
+  const result=await pollSubmissionStatus({fetchStatus:n8n.fetchStatus,submissionId:pollId,storage:storage(),sleep:clock.sleep,onProgress:p=>progress.push(p.attempt)});
+  assert.equal(result.kind,'found');
+  assert.equal(result.status,found);
+  assert.equal(result.attempts,4);
+  assert.equal(n8n.calls(),4);
+  assert.deepEqual(clock.waits,STATUS_POLL_DELAYS_MS.slice(0,3));
+  assert.deepEqual(progress,[1,2,3]);
+});
+test('upload follow-up stops at a duplicate and remembers it for refresh',async()=>{
+  const browserStorage=storage();
+  const n8n=scripted([{found:false},{found:true,duplicate:true,submission_id:pollId}]);
+  const result=await pollSubmissionStatus({fetchStatus:n8n.fetchStatus,submissionId:pollId,storage:browserStorage,sleep:fakeSleep().sleep});
+  assert.equal(result.kind,'duplicate');
+  assert.equal(n8n.calls(),2);
+  assert.equal(browserStorage.getItem(LAST_DUPLICATE_SUBMISSION_STORAGE_KEY),pollId);
+});
+test('upload follow-up treats a saved submission without line items as final',async()=>{
+  const n8n=scripted([{found:true,submission_id:pollId,items:[]}]);
+  const result=await pollSubmissionStatus({fetchStatus:n8n.fetchStatus,submissionId:pollId,storage:storage(),sleep:fakeSleep().sleep});
+  assert.equal(result.kind,'found');
+  assert.equal(n8n.calls(),1);
+});
+test('upload follow-up times out after a bounded number of requests and keeps the submission ID',async()=>{
+  const browserStorage=storage();
+  const n8n=scripted([{found:false}]);
+  const clock=fakeSleep();
+  const result=await pollSubmissionStatus({fetchStatus:n8n.fetchStatus,submissionId:pollId,storage:browserStorage,sleep:clock.sleep});
+  assert.equal(result.kind,'timeout');
+  assert.equal(n8n.calls(),STATUS_POLL_DELAYS_MS.length+1);
+  assert.ok(n8n.calls()<=12);
+  assert.ok(clock.waits.reduce((a,b)=>a+b,0)<=120000);
+  assert.equal(readLastSubmissionId(browserStorage),pollId);
+});
+test('upload follow-up retries a transient status error but stops after repeated errors',async()=>{
+  const recovered=scripted([new Error('502'),{found:false},new Error('502'),{found:true,submission_id:pollId,items:[{}]}]);
+  assert.equal((await pollSubmissionStatus({fetchStatus:recovered.fetchStatus,submissionId:pollId,storage:storage(),sleep:fakeSleep().sleep})).kind,'found');
+  const failing=scripted([new Error('502')]);
+  const result=await pollSubmissionStatus({fetchStatus:failing.fetchStatus,submissionId:pollId,storage:storage(),sleep:fakeSleep().sleep});
+  assert.equal(result.kind,'error');
+  assert.equal(failing.calls(),3);
+});
+test('upload follow-up stops without further requests once cancelled',async()=>{
+  const n8n=scripted([{found:false}]);
+  let cancelled=false;
+  const result=await pollSubmissionStatus({fetchStatus:n8n.fetchStatus,submissionId:pollId,storage:storage(),sleep:async()=>{cancelled=true},isCancelled:()=>cancelled});
+  assert.equal(result.kind,'cancelled');
+  assert.equal(n8n.calls(),1);
 });

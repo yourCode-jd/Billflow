@@ -343,18 +343,21 @@ async function save(req,res,history) {
   if (warnings.length && input.confirmedWarnings !== true) return reply(res,422,{error:'Review validation warnings and confirm before saving.',warnings});
   if (!invoice.invoice_number && !invoice.supplier) return reply(res,422,{error:'Supplier or invoice number is required.'});
   // Record the approved version before forwarding, so history persists even when n8n is unavailable.
-  await history.upsert({submissionId:isSubmissionId(input.submission_id)?input.submission_id:null,source:'approved',invoice});
+  // A history failure (e.g. an unreadable file) must not block sending the approved invoice to n8n.
+  let history_saved=true;
+  try { await history.upsert({submissionId:isSubmissionId(input.submission_id)?input.submission_id:null,source:'approved',invoice}); }
+  catch { history_saved=false; console.warn('Could not record approved invoice in history'); }
   const url=process.env.N8N_WEBHOOK_URL;
-  if (!url) return reply(res,409,{history_saved:true,error:'n8n webhook not configured. You can download the CSV now or set N8N_WEBHOOK_URL.'});
+  if (!url) return reply(res,409,{history_saved,error:'n8n webhook not configured. You can download the CSV now or set N8N_WEBHOOK_URL.'});
   let parsed;
-  try { parsed=new URL(url); } catch { return reply(res,500,{history_saved:true,error:'Invalid n8n webhook URL.'}); }
+  try { parsed=new URL(url); } catch { return reply(res,500,{history_saved,error:'Invalid n8n webhook URL.'}); }
   // Local-only default avoids sending client bills to arbitrary external destinations accidentally.
-  if (!['http:','https:'].includes(parsed.protocol) || parsed.username || parsed.password || !['localhost','127.0.0.1','[::1]'].includes(parsed.hostname)) return reply(res,403,{history_saved:true,error:'Remote webhook blocked in demo. Use a local HTTP(S) n8n URL.'});
+  if (!['http:','https:'].includes(parsed.protocol) || parsed.username || parsed.password || !['localhost','127.0.0.1','[::1]'].includes(parsed.hostname)) return reply(res,403,{history_saved,error:'Remote webhook blocked in demo. Use a local HTTP(S) n8n URL.'});
   try {
     const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json',...(process.env.N8N_SHARED_SECRET?{'x-bill-agent-secret':process.env.N8N_SHARED_SECRET}:{})},body:JSON.stringify({invoice,approved_at:new Date().toISOString(),warnings_acknowledged:warnings.length>0}),signal:AbortSignal.timeout(15000)});
-    if (!r.ok) return reply(res,502,{history_saved:true,error:`n8n returned ${r.status}; check whether webhook is active and sheet is connected.`});
-    return reply(res,200,{history_saved:true,ok:true,message:'Approved invoice sent to n8n.'});
-  } catch { return reply(res,502,{history_saved:true,error:'Cannot reach n8n. Check its webhook URL and whether n8n is running.'}); }
+    if (!r.ok) return reply(res,502,{history_saved,error:`n8n returned ${r.status}; check whether webhook is active and sheet is connected.`});
+    return reply(res,200,{history_saved,ok:true,message:'Approved invoice sent to n8n.'});
+  } catch { return reply(res,502,{history_saved,error:'Cannot reach n8n. Check its webhook URL and whether n8n is running.'}); }
 }
 async function listHistory(req,res,history) {
   requireSameOrigin(req);

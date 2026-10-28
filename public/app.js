@@ -97,6 +97,27 @@ export function historyCsvFilename(invoices) {
 export function historyTotalText(invoice) {
   return typeof invoice.total==='number' ? `${invoice.currency||''}${invoice.currency&&!/^[^A-Za-z]$/.test(invoice.currency)?' ':''}${invoice.total}` : '—';
 }
+// n8n acknowledges an upload before saving it, so the dashboard re-checks with backoff: at most 12 requests over ~95 s.
+export const STATUS_POLL_DELAYS_MS=[2000,3000,4000,5000,6000,8000,10000,12000,15000,15000,15000];
+const MAX_CONSECUTIVE_STATUS_ERRORS=3;
+// Re-checks one submission until it is found or duplicate (final), errors repeatedly, times out, or is cancelled.
+export async function pollSubmissionStatus({fetchStatus,submissionId,storage=globalThis.localStorage,delays=STATUS_POLL_DELAYS_MS,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),isCancelled=()=>false,onProgress=()=>{}}) {
+  let result={kind:'error',submissionId};
+  let errors=0;
+  for (let attempt=1;attempt<=delays.length+1;attempt++) {
+    if (isCancelled()) return {kind:'cancelled',submissionId,attempts:attempt-1};
+    result=await restoreSubmissionState({storage,fetchStatus,submissionId});
+    if (isCancelled()) return {kind:'cancelled',submissionId,attempts:attempt};
+    if (result.kind==='found'||result.kind==='duplicate'||result.kind==='none') return {...result,attempts:attempt};
+    errors=result.kind==='error'?errors+1:0;
+    if (errors>=MAX_CONSECUTIVE_STATUS_ERRORS) return {...result,attempts:attempt};
+    if (attempt>delays.length) break;
+    onProgress({attempt,total:delays.length+1,nextDelayMs:delays[attempt-1],result});
+    await sleep(delays[attempt-1]);
+  }
+  return {...result,kind:result.kind==='error'?'error':'timeout',attempts:delays.length+1};
+}
+
 // CSV column mapping. Field order and keys must match CSV_FIELDS in server/invoice.js; the first 13 are the default format.
 export const CSV_FIELD_OPTIONS=[
   {key:'supplier',name:'Supplier'},{key:'invoice_number',name:'Invoice number'},{key:'date',name:'Date'},{key:'currency',name:'Currency'},
@@ -297,9 +318,41 @@ function init() {
       msg('recovery-message','Status lookup failed. Retry this ID or enter another saved submission ID.');
     }
   };
+  // Follow an accepted upload until n8n reports a final result. A newer accepted upload or a valid manual restore cancels it.
+  let pollToken=0;
+  const followUpload=async submissionId=>{
+    const token=++pollToken;
+    const current=()=>token===pollToken;
+    // Recovery stays available while waiting; restoring another ID cancels this follow-up.
+    $('recovery').hidden=false;
+    $('recovery-id').value=submissionId;
+    msg('recovery-message','Checking this submission automatically. To open a different saved invoice, enter its submission ID.');
+    $('state').textContent='Processing';
+    setEmpty('Waiting for the invoice to be processed…');
+    const result=await pollSubmissionStatus({fetchStatus:fetchSubmissionStatus,submissionId,isCancelled:()=>!current(),onProgress:({attempt,total,nextDelayMs})=>{
+      $('state').textContent='Processing';
+      setEmpty(`Processing the invoice… checking again in ${Math.round(nextDelayMs/1000)} s (check ${attempt} of ${total}).`);
+    }});
+    if (!current()||result.kind==='cancelled') return;
+    if (result.kind==='duplicate') {showDuplicate();msg('message',DUPLICATE_SUBMISSION_MESSAGE);return;}
+    if (result.kind==='found') {$('recovery').hidden=true;renderStatus(result.status);msg('message','Invoice processed.');return;}
+    $('recovery').hidden=false;
+    $('recovery-id').value=submissionId;
+    if (result.kind==='timeout') {
+      $('state').textContent='Still processing';
+      setEmpty('Processing is taking longer than expected. The submission ID is kept, so you can check again.');
+      msg('recovery-message','Use Restore invoice to check this submission again in a minute.');
+      return;
+    }
+    $('state').textContent='Status unavailable';
+    setEmpty('Could not check the submitted invoice. Check your connection and try again.');
+    msg('recovery-message','Status lookup failed. Retry this ID or enter another saved submission ID.');
+  };
   $('recover').onclick=async()=>{
     const submissionId=$('recovery-id').value.trim();
     if(!isSubmissionId(submissionId)) {msg('recovery-message','Enter a valid submission ID.');return;}
+    // Cancel an automatic follow-up only once a valid restore replaces it.
+    pollToken++;
     $('recover').disabled=true;
     msg('recovery-message','Looking up the saved invoice…');
     await restoreLastSubmission(submissionId);
@@ -308,9 +361,9 @@ function init() {
   $('approved').onchange=sync;
   for(const k of fields)$(k).addEventListener('input',()=>{$('approved').checked=false;sync()});
   $('add').onclick=()=>{rows.push({description:'',quantity:null,unit_price:null,amount:null});$('approved').checked=false;renderRows();sync()};
-  $('extract').onclick=async()=>{if(!file)return;$('extract').disabled=true;$('duplicate-warning').hidden=true;msg('message','Sending invoice for processing…');try{const base64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file)});const response=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base64,mimeType:file.type,fileName:file.name})});const data=await response.json();if(!response.ok)throw Error((data.error||'Upload failed.')+(data.code?` [${data.code}]`:''));if(!rememberSubmissionId(data.submission_id))throw Error('Upload was accepted, but its submission ID was invalid.');if(data.duplicate===true){rememberDuplicateSubmissionId(data.submission_id);showDuplicate();msg('message',data.message||DUPLICATE_SUBMISSION_MESSAGE);return;}$('state').textContent='Processing';setEmpty('Checking the submitted invoice status…');msg('message',data.message||'Accepted for processing — not yet saved.');await restoreLastSubmission()}catch(e){msg('message',e.message||'Upload failed.')}finally{$('extract').disabled=false}};
+  $('extract').onclick=async()=>{if(!file)return;$('extract').disabled=true;$('duplicate-warning').hidden=true;msg('message','Sending invoice for processing…');try{const base64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file)});const response=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base64,mimeType:file.type,fileName:file.name})});const data=await response.json();if(!response.ok)throw Error((data.error||'Upload failed.')+(data.code?` [${data.code}]`:''));if(!rememberSubmissionId(data.submission_id))throw Error('Upload was accepted, but its submission ID was invalid.');pollToken++;if(data.duplicate===true){rememberDuplicateSubmissionId(data.submission_id);showDuplicate();msg('message',data.message||DUPLICATE_SUBMISSION_MESSAGE);return;}msg('message',data.message||'Accepted for processing — not yet saved.');void followUpload(data.submission_id)}catch(e){msg('message',e.message||'Upload failed.')}finally{$('extract').disabled=false}};
   $('csv').onclick=async()=>{try{const r=await fetch('/api/csv',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({invoice:getInvoice(),columns:csvColumnsFromMapping(csvMapping)})});if(!r.ok)throw Error('Could not generate CSV.');const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='invoice.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);msg('save-message','CSV downloaded. Review it before importing into accounting software.')}catch(e){msg('save-message',e.message)}};
-  $('save').onclick=async()=>{msg('save-message','Sending to n8n…');try{const r=await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({invoice:getInvoice(),confirmedWarnings:true,submission_id:currentSubmissionId})});const data=await r.json();if(data.history_saved)void loadHistory();if(!r.ok)throw Error(data.error+(data.history_saved?' The approved invoice was saved to invoice history.':''));msg('save-message',data.message);$('state').textContent='Sent to n8n'}catch(e){msg('save-message',e.message)}};
+  $('save').onclick=async()=>{msg('save-message','Sending to n8n…');try{const r=await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({invoice:getInvoice(),confirmedWarnings:true,submission_id:currentSubmissionId})});const data=await r.json();if(data.history_saved)void loadHistory();if(!r.ok)throw Error(data.error+(data.history_saved?' The approved invoice was saved to invoice history.':''));msg('save-message',data.message+(data.history_saved===false?' It could not be saved to invoice history.':''));$('state').textContent='Sent to n8n'}catch(e){msg('save-message',e.message)}};
   const selectedHistoryIds=()=>[...$('history-rows').querySelectorAll('input[type=checkbox]:checked')].map(box=>box.value);
   const syncHistory=()=>{const selected=selectedHistoryIds();$('history-selected').disabled=!selected.length;$('history-all').disabled=!history.length;$('history-select-all').checked=history.length>0&&selected.length===history.length};
   const downloadHistory=async ids=>{
