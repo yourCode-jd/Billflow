@@ -15,6 +15,8 @@ node server/index.js
 ```
 Open `http://localhost:3000`.
 
+Run the tests with `npm test` (Node's built-in test runner; no dependencies).
+
 ## Workflow
 1. Upload a JPG/PNG/WebP/PDF (up to 10MB).
 2. Gemini identifies invoice fields and item rows. Empty/uncertain values require human correction.
@@ -25,7 +27,7 @@ Open `http://localhost:3000`.
 ## Invoice history
 - Stored in a local JSON file, `data/invoices.json` by default (set `BILL_AI_HISTORY_FILE` to change it). `data/` is git-ignored; back the file up if the history matters.
 - An invoice is added when the dashboard's status lookup reports a saved, non-duplicate invoice from n8n, or when you approve it with **Send to n8n**. The approved version is kept even if n8n is not configured or unreachable.
-- After an upload, the dashboard re-checks the submission automatically: at most 12 checks over about 95 seconds, stopping as soon as the invoice is found or marked duplicate. If processing takes longer, it shows **Still processing** and keeps the submission ID ready for **Restore invoice**.
+- After an upload, the dashboard re-checks the submission automatically: at most 20 checks over 7 minutes (intervals grow from 2 s to 30 s, since slow n8n runs have taken about 6 minutes), stopping as soon as the invoice is found or marked duplicate. The progress text shows the time elapsed and the next check. If processing takes longer, it shows **Still processing** and keeps the submission ID ready for **Restore invoice**. Reloading the page makes one status check and does not resume the automatic checks.
 - There is one record per submission ID. Re-approving or re-checking an invoice updates its record instead of adding another; an approved version is never replaced by a later status lookup. Approvals without a submission ID are matched by supplier and invoice number.
 - **Download CSV** in the review step does not add to history. Invoices processed in n8n but never opened in this dashboard do not appear; history is not synced from Google Sheets.
 - History CSVs use the same columns as the single-invoice CSV, with the same formula-injection escaping. There is no delete, edit, search or paging in the history panel.
@@ -41,6 +43,6 @@ Open `http://localhost:3000`.
 - Uploaded files are not stored on the local server; invoice details are stored in the local history file described above. The uploaded bill **is sent through n8n to Google's Gemini API** for extraction, and approved information is sent to n8n only when requested. Check data-use terms of the chosen API tier before real customer data.
 - Duplicate bills are detected by the n8n workflow, and the dashboard shows a warning without creating a duplicate record.
 - No logins or multi-user separation: anyone who can reach the local server can see and export the whole history. No database, background tasks or live WhatsApp integration.
-- Validation warns about missing fields and arithmetic differences; it is not full tax compliance validation.
+- Validation warns about missing fields and arithmetic differences, including a printed subtotal or GST that does not match the line items; such bills show **Needs Review · Flagged** for a person to check. It is not full tax compliance validation.
 - Requires a functioning internet connection for Gemini / Google Sheets.
 - API keys must remain on the server side in `.env`.

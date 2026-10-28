@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {CSV_FIELDS,DEFAULT_CSV_COLUMNS} from '../server/invoice.js';
-import {pollSubmissionStatus,STATUS_POLL_DELAYS_MS,addCsvPreset,CSV_FIELD_OPTIONS,CSV_PRESETS_STORAGE_KEY,csvColumnsFromMapping,csvMappingFromColumns,defaultCsvMapping,deleteCsvPreset,moveCsvColumn,parseCsv,readCsvPresets,renameCsvPreset,sameCsvColumns,updateCsvPreset,writeCsvPresets,displayGstPercent,historyCsvFilename,historyExportBody,historyTotalText,stateTone,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,statusWarningText,submissionResultKind} from './app.js';
+import {formatWait,pollSubmissionStatus,STATUS_POLL_DELAYS_MS,STATUS_POLL_MAX_WAIT_MS,addCsvPreset,CSV_FIELD_OPTIONS,CSV_PRESETS_STORAGE_KEY,csvColumnsFromMapping,csvMappingFromColumns,defaultCsvMapping,deleteCsvPreset,moveCsvColumn,parseCsv,readCsvPresets,renameCsvPreset,sameCsvColumns,updateCsvPreset,writeCsvPresets,displayGstPercent,historyCsvFilename,historyExportBody,historyTotalText,stateTone,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,statusWarningText,submissionResultKind} from './app.js';
 
 const storage=initial=>{const values=new Map(Object.entries(initial||{}));return {getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)}};
 
@@ -257,9 +257,28 @@ test('upload follow-up times out after a bounded number of requests and keeps th
   const result=await pollSubmissionStatus({fetchStatus:n8n.fetchStatus,submissionId:pollId,storage:browserStorage,sleep:clock.sleep});
   assert.equal(result.kind,'timeout');
   assert.equal(n8n.calls(),STATUS_POLL_DELAYS_MS.length+1);
-  assert.ok(n8n.calls()<=12);
-  assert.ok(clock.waits.reduce((a,b)=>a+b,0)<=120000);
+  assert.equal(n8n.calls(),20);
+  assert.equal(clock.waits.reduce((a,b)=>a+b,0),7*60000);
+  assert.equal(STATUS_POLL_MAX_WAIT_MS,7*60000);
   assert.equal(readLastSubmissionId(browserStorage),pollId);
+});
+test('upload follow-up waits long enough for a slow n8n run (~6 minutes) with conservative backoff',async()=>{
+  // Fake n8n that finishes 6 minutes after upload, as seen in a live run.
+  let now=0;const found={found:true,submission_id:pollId,items:[{description:'LED'}]};
+  let calls=0;const fetchStatus=async()=>{calls++;return now>=6*60000?found:{found:false,state:'processing'}};
+  const progress=[];
+  const result=await pollSubmissionStatus({fetchStatus,submissionId:pollId,storage:storage(),sleep:async ms=>{now+=ms},onProgress:p=>progress.push(p)});
+  assert.equal(result.kind,'found');
+  assert.ok(now>=6*60000&&now<=6*60000+30000,'found within one interval of completion');
+  assert.ok(calls<=18,`${calls} requests`);
+  assert.ok(STATUS_POLL_DELAYS_MS.every((ms,i)=>ms<=30000&&(i===0||ms>=STATUS_POLL_DELAYS_MS[i-1])),'non-decreasing, capped at 30 s');
+  assert.deepEqual(progress.slice(0,3).map(p=>p.elapsedMs),[0,2000,5000]);
+  assert.equal(progress.at(-1).total,20);
+});
+test('formats waits for progress and timeout messages',()=>{
+  assert.equal(formatWait(2000),'2 s');
+  assert.equal(formatWait(90000),'1 min 30 s');
+  assert.equal(formatWait(STATUS_POLL_MAX_WAIT_MS),'7 min');
 });
 test('upload follow-up retries a transient status error but stops after repeated errors',async()=>{
   const recovered=scripted([new Error('502'),{found:false},new Error('502'),{found:true,submission_id:pollId,items:[{}]}]);
@@ -275,4 +294,13 @@ test('upload follow-up stops without further requests once cancelled',async()=>{
   const result=await pollSubmissionStatus({fetchStatus:n8n.fetchStatus,submissionId:pollId,storage:storage(),sleep:async()=>{cancelled=true},isCancelled:()=>cancelled});
   assert.equal(result.kind,'cancelled');
   assert.equal(n8n.calls(),1);
+});
+test('upload follow-up cancelled late in a long wait makes no further requests',async()=>{
+  const n8n=scripted([{found:false}]);
+  let waited=0;
+  const result=await pollSubmissionStatus({fetchStatus:n8n.fetchStatus,submissionId:pollId,storage:storage(),sleep:async ms=>{waited+=ms},isCancelled:()=>waited>=5*60000});
+  assert.equal(result.kind,'cancelled');
+  const callsAtCancel=n8n.calls();
+  assert.ok(callsAtCancel>10&&callsAtCancel<20);
+  assert.equal(result.attempts,callsAtCancel);
 });

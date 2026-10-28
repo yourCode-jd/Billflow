@@ -97,13 +97,19 @@ export function historyCsvFilename(invoices) {
 export function historyTotalText(invoice) {
   return typeof invoice.total==='number' ? `${invoice.currency||''}${invoice.currency&&!/^[^A-Za-z]$/.test(invoice.currency)?' ':''}${invoice.total}` : '—';
 }
-// n8n acknowledges an upload before saving it, so the dashboard re-checks with backoff: at most 12 requests over ~95 s.
-export const STATUS_POLL_DELAYS_MS=[2000,3000,4000,5000,6000,8000,10000,12000,15000,15000,15000];
+// n8n acknowledges an upload before saving it, and slow runs have taken ~6 minutes, so the dashboard re-checks
+// with backoff capped at 30 s: at most 20 requests over 7 minutes.
+export const STATUS_POLL_DELAYS_MS=[2000,3000,5000,10000,15000,15000,20000,20000,...Array(11).fill(30000)];
+export const STATUS_POLL_MAX_WAIT_MS=STATUS_POLL_DELAYS_MS.reduce((sum,ms)=>sum+ms,0);
+export function formatWait(ms) {
+  const seconds=Math.round(ms/1000), minutes=Math.floor(seconds/60), rest=seconds%60;
+  return minutes ? `${minutes} min${rest?` ${rest} s`:''}` : `${seconds} s`;
+}
 const MAX_CONSECUTIVE_STATUS_ERRORS=3;
 // Re-checks one submission until it is found or duplicate (final), errors repeatedly, times out, or is cancelled.
 export async function pollSubmissionStatus({fetchStatus,submissionId,storage=globalThis.localStorage,delays=STATUS_POLL_DELAYS_MS,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),isCancelled=()=>false,onProgress=()=>{}}) {
   let result={kind:'error',submissionId};
-  let errors=0;
+  let errors=0, elapsedMs=0;
   for (let attempt=1;attempt<=delays.length+1;attempt++) {
     if (isCancelled()) return {kind:'cancelled',submissionId,attempts:attempt-1};
     result=await restoreSubmissionState({storage,fetchStatus,submissionId});
@@ -112,8 +118,9 @@ export async function pollSubmissionStatus({fetchStatus,submissionId,storage=glo
     errors=result.kind==='error'?errors+1:0;
     if (errors>=MAX_CONSECUTIVE_STATUS_ERRORS) return {...result,attempts:attempt};
     if (attempt>delays.length) break;
-    onProgress({attempt,total:delays.length+1,nextDelayMs:delays[attempt-1],result});
+    onProgress({attempt,total:delays.length+1,nextDelayMs:delays[attempt-1],elapsedMs,result});
     await sleep(delays[attempt-1]);
+    elapsedMs+=delays[attempt-1];
   }
   return {...result,kind:result.kind==='error'?'error':'timeout',attempts:delays.length+1};
 }
@@ -329,9 +336,9 @@ function init() {
     msg('recovery-message','Checking this submission automatically. To open a different saved invoice, enter its submission ID.');
     $('state').textContent='Processing';
     setEmpty('Waiting for the invoice to be processed…');
-    const result=await pollSubmissionStatus({fetchStatus:fetchSubmissionStatus,submissionId,isCancelled:()=>!current(),onProgress:({attempt,total,nextDelayMs})=>{
+    const result=await pollSubmissionStatus({fetchStatus:fetchSubmissionStatus,submissionId,isCancelled:()=>!current(),onProgress:({attempt,total,nextDelayMs,elapsedMs})=>{
       $('state').textContent='Processing';
-      setEmpty(`Processing the invoice… checking again in ${Math.round(nextDelayMs/1000)} s (check ${attempt} of ${total}).`);
+      setEmpty(`Processing the invoice… ${elapsedMs?`${formatWait(elapsedMs)} so far; `:''}checking again in ${formatWait(nextDelayMs)} (check ${attempt} of ${total}). Some invoices take up to ${formatWait(STATUS_POLL_MAX_WAIT_MS)}.`);
     }});
     if (!current()||result.kind==='cancelled') return;
     if (result.kind==='duplicate') {showDuplicate();msg('message',DUPLICATE_SUBMISSION_MESSAGE);return;}
@@ -340,8 +347,8 @@ function init() {
     $('recovery-id').value=submissionId;
     if (result.kind==='timeout') {
       $('state').textContent='Still processing';
-      setEmpty('Processing is taking longer than expected. The submission ID is kept, so you can check again.');
-      msg('recovery-message','Use Restore invoice to check this submission again in a minute.');
+      setEmpty(`Not finished after ${formatWait(STATUS_POLL_MAX_WAIT_MS)} of automatic checks. n8n may still be processing it; nothing was lost and the submission ID is kept.`);
+      msg('recovery-message','Automatic checks stopped. Use Restore invoice in a few minutes to check this submission again.');
       return;
     }
     $('state').textContent='Status unavailable';

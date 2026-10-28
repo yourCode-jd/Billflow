@@ -1,6 +1,6 @@
 # Bill AI Agent — Project Status
 
-Status prepared 2026-10-27; updated 2026-10-28 for invoice history and CSV exports. This document distinguishes repository tests and local workflow exports from live production behavior.
+Status prepared 2026-10-27; last updated 2026-10-28 after the final demo audit (invoice history, CSV exports and column mapping, dashboard redesign, automatic status re-check, and five live workflow runs). This document distinguishes repository tests and local workflow exports from live production behavior.
 
 ## 1. Project Overview
 
@@ -36,7 +36,13 @@ These are implemented in code or present in workflow exports; live deployment an
 
 ## 4. Verified Working
 
-Latest repository test run (2026-10-28): `npm test` — **58 passed, 0 failed** (48 earlier tests plus 10 for history and CSV export).
+**Live workflow evidence (2026-10-28, reported by the project owner).** Five end-to-end runs through the dashboard, n8n and Google Sheets were completed and their dashboard, n8n and Sheets results were confirmed, including normal processing with line items, duplicate detection (dashboard warning and `Duplicate` review row) and submission-ID recovery. One normal run took about 6 minutes in n8n, which led to the 7-minute polling window. These runs were not repeated during the audit.
+
+**Local evidence from the live runs.** The local history file holds three invoices recorded from live n8n status lookups (`SCL-2024-0012`, `NS-2026-7318`, `NS-2026-7320`), each with 4–5 line items. Billflow records a lookup only when it includes line items, and the status workflow reads line items from the Invoices sheet by `submission_id`. So the live Invoices sheet does store `submission_id` on normal rows, and status lookups recover normal invoices into history.
+
+**NS-2026-7318 validation warnings (investigated 2026-10-28).** The dashboard shows `Needs Review · Flagged` with "Subtotal does not match item amounts" and "GST mismatch". The source bill itself is inconsistent: its line amounts sum to 42,510.00 but it prints a subtotal of 43,510.00, and its rows at 18%/12% imply GST of 7,363.20 (7,189.99 after the discount) against a printed 6,074.20. Only the summary box adds up (43,510 − 1,000 + 6,074.20 + 0.80 = 48,585). No supported tax, discount or round-off rule reconciles the rows with the summary, so the warnings are correct and validation was not changed. A reviewer can approve it after checking.
+
+Latest repository test run (2026-10-28): `npm test` — **80 passed, 0 failed** (invoice validation and normalization, status/recovery, duplicate handling, history and CSV export, CSV column mapping, automatic status polling, and the history-write fallback for approvals).
 
 The focused normal invoice regression test also passed:
 
@@ -62,18 +68,19 @@ Syntax checks passed for every `server/*.js` and `public/*.js` file. `git diff -
 - After a server restart and page reload, all 4 invoices remained. Re-approving after the restart added no records (the file held 4). **Download all** still returned 7/7 line items.
 - The layout was checked at 1280 px and 390 px wide; the history table scrolls sideways inside its container on narrow screens. The only console error was a 404 for `/favicon.ico`, which also happens without this change.
 
-The browser test seeded invoices through the approval endpoint. Recording from a live n8n status lookup is covered only by a mocked server test, not by a live n8n run.
+The browser test seeded invoices through the approval endpoint. Recording from live n8n status lookups is shown by the history records above.
+
+**Automatic status re-check (2026-10-28).** After an accepted upload the dashboard polls the status route at most 20 times over 7 minutes (2, 3, 5, 10, 15, 15, 20, 20 s, then 30 s), showing elapsed time and the next check. It stops on a found or duplicate result, after 3 consecutive errors, or when a newer accepted upload or a valid **Restore invoice** replaces it; a failed upload or an invalid restore ID does not cancel it. Unit tests in `public/app.test.js` cover a ~6-minute completion, the 7-minute timeout, errors and cancellation. A Playwright suite kept outside the repository passed 10/10 scenarios in Chromium, Firefox and WebKit with a fake clock and mocked status responses.
 
 ## 5. Known Issues / Pending Verification
 
-- **Duplicate dashboard message:** The server and UI show the duplicate warning only for an explicit `duplicate: true`. In the available upload export, the duplicate branch writes a `Duplicate` review row with a submission ID; the status export recognizes duplicate review rows. Unit tests cover explicit duplicate signals. Production end-to-end delivery of that signal to the browser has not been verified.
-- **Normal submission-ID persistence:** The status workflow filters Invoices and Invoice Reviews by `submission_id`. However, the available upload export's normal `07A - Save Invoice Items` and `10 - Save Invoice Review` auto-map schemas do not list `submission_id`, while its duplicate-review append schema does. Verify the actual Google Sheets headers and n8n node mappings; normal saved-invoice recovery may fail unless the ID is persisted on normal rows.
-- **Line-item write behavior:** `07 - Prepare Product Rows` was updated in the local export to accept multiple empty duplicate-lookup results while still stopping on a match. A local smoke test passed, but no live n8n execution confirms the Google Sheets lookup's actual multi-item output.
-- **EcoMart tax discrepancy:** With a proportional invoice-wide discount applied before tax, the synthetic fixture calculates GST of about `$93.14`; the supplied invoice reports `$95.80`. The workflow retains a GST-mismatch warning. Confirm the invoice's tax treatment and actual extracted data before changing validation.
-- **Google Sheets schema:** The local invoice export includes `currency` and `discount` mappings, but the physical sheet headers were not inspected. Those columns must exist for the values to persist. The status export and sheet behavior have not been tested against live Sheets.
-- **Source data:** No captured Gemini execution output or live rows for `ECO-2026-0824` were available for this review. Currency is represented by `$` in the fixture; no currency code is inferred. GSTIN, payment mode, and round-off remain empty where the source does not support values.
-- **History coverage:** History records only invoices that the dashboard looked up as saved, or that were approved with **Send to n8n**. **Download CSV** in the review step does not add to history, and invoices processed only in n8n/Sheets are not imported. Because normal rows may lack `submission_id` (above), live status lookups, and therefore history recording from n8n, may fail for normal invoices until that mapping is fixed.
-- **Status lookups and the `submission_id` mapping (traced 2026-10-28):** In the n8n Demo export, `submission_id` reaches both normal sheet writes (`07A - Save Invoice Items`, `10 - Save Invoice Review`). Both auto-map, so the ID is written only if the live sheet has a `submission_id` column header; their stored column lists do not include it. The status workflow returns `found: true` when either sheet matches. If only the Invoice Reviews row has the ID, the response has no line items or amounts. Billflow used to record that as an empty history record. It now records a status only when it includes line items (regression test in `server/history.test.js`). Not yet verified against live data: whether the live Invoices sheet has a `submission_id` header and whether existing normal rows contain the ID. If the header is missing, add it to the sheet; no workflow change is needed. Separately, the upload webhook answers immediately (default response mode), so the first status check usually reports `processing`. Since 2026-10-28 the dashboard re-checks automatically after an upload with backoff: at most 12 requests over about 95 seconds. It stops when the invoice is found or marked duplicate, after 3 consecutive errors, or when a new upload or **Restore invoice** cancels it. On timeout it shows **Still processing** with the submission ID ready to restore. Reloading the page still makes only one status check.
+No demo blockers are known. Remaining limitations:
+
+- **Polling after reload:** Reloading the page makes one status check for the stored submission ID and does not resume automatic polling. Runs longer than 7 minutes end on **Still processing**; **Restore invoice** checks again.
+- **Flagged source bills:** Bills whose printed summary does not match their line items (for example `NS-2026-7318`, above, or the synthetic `ECO-2026-0824` fixture) are correctly flagged for review. Validation does not guess undocumented tax or charge rules.
+- **History coverage:** History records only invoices the dashboard looked up as saved, or that were approved with **Send to n8n**. **Download CSV** in the review step does not add to history, and invoices processed only in n8n/Sheets are not imported. If a status lookup finds only an Invoice Reviews row (no line items), nothing is recorded (regression test in `server/history.test.js`).
+- **Browser test location:** The Playwright browser suites (history, UI, CSV mapping, polling) live outside the repository; `npm test` covers the logic but not the DOM wiring.
+- **WebKit phone emulation:** An intermittent crash on the first 320 px mobile-emulated page in Playwright's WebKit build remains unconfirmed and is not attributed to Billflow (see section 7).
 
 The submission ID `sub-1792746870954-svpovbjnuh` appears in dashboard recovery tests and was used as a manual recovery example. Its presence in tests does not establish that a corresponding live invoice row is available.
 
@@ -98,27 +105,22 @@ The Demo export's `Invoices` mapping lists `supplier_name`, `invoice_number`, `d
 
 ## 7. Tests and Validation
 
-Most recently run:
+Most recently run (final audit, 2026-10-28):
 
 | Command | Result |
 |---|---|
-| `npm test` | 48 passed, 0 failed |
-| `node --test --test-name-pattern='normalizes real invoice numeric fields before existing validation and CSV serialization' server/invoice.test.js` | 1 passed, 0 failed |
-| `node --check server/index.js` | Passed |
-| `node --check server/invoice.js` | Passed |
-| `node --check public/app.js` | Passed |
-| `node --check server/invoice.test.js` | Passed |
-| `node --check public/app.test.js` | Passed |
-| `node --check server/history.js`, `server/history.test.js` | Passed |
+| `npm test` | 80 passed, 0 failed |
+| `node --check` on every `server/*.js` and `public/*.js` file | Passed |
 | `git diff --check` | Passed |
-| Invoice history browser test (headless Chromium, temporary history file) | All checks passed (see section 4) |
-| Cross-browser suites, 2026-10-28 (history 13, redesign UI 20, CSV mapping 16 checks) in headless Chromium 156, Firefox 139 and WebKit 18.5 (Playwright builds) | All passed in all three engines. In WebKit, the UI suite's first phone-emulation page crashed intermittently (see below) |
+| Polling browser suite (10 scenarios, fake clock, mocked status) in Chromium, Firefox and WebKit | All passed |
+| Cross-browser suites (history 13, redesign UI 20, CSV mapping 16 checks) in headless Chromium 156, Firefox 139 and WebKit 18.5 (Playwright builds) | All passed in all three engines. In WebKit, the UI suite's first phone-emulation page crashed intermittently (see below) |
+| Live dashboard → n8n → Google Sheets runs | Five runs completed and confirmed by the project owner (section 4); not repeated in the audit |
 
 **Browser compatibility notes.** Native Safari cannot run on Ubuntu, so Playwright's WebKit build was used as the closest available engine. It is not a substitute for testing on a real iPhone or Mac. Firefox found one bug: a 1 px horizontal scroll at 320 px wide, caused by the top-bar links. It was fixed in `public/style.css`.
 
 In WebKit, the first page of the redesign UI suite (320 px with mobile emulation) sometimes crashed during its first navigation. It never happened with mobile emulation off, at desktop width, on a plain HTML page, or in 131 standalone Billflow loads. Removing `backdrop-filter`, safe-area insets or sticky positioning did not change it. This WebKit build ran without Playwright's official system dependencies (two libraries were copied in by hand), so the crash is not attributed to Billflow and remains unconfirmed.
 
-No Gemini, n8n Cloud, or Google Sheets integration test was performed.
+Live integration evidence comes from the five owner-run workflows; no automated Gemini, n8n Cloud, or Google Sheets integration test exists.
 
 ## 8. Current Limitations
 
@@ -140,12 +142,11 @@ These are planned, not implemented as complete product features.
 
 ## 10. Recommended Next Steps
 
-1. Verify and correct `submission_id` persistence in the actual Invoices and Invoice Reviews sheet headers and normal n8n append mappings; then test status recovery for a normal submission.
-2. Run an authorized end-to-end test against the active n8n deployment for both a normal invoice and a duplicate; confirm the browser receives the correct status without restoring the original invoice as the new result.
-3. Verify the local `currency` and `discount` mappings against physical sheet headers and real status output.
-4. Capture actual Gemini output and all Sheets rows for `ECO-2026-0824`; confirm all five rows and reconcile the GST calculation rule.
-5. After the `submission_id` fix, run one live upload and confirm it appears in Invoice history from the status lookup.
-6. Define production security, storage, and deployment requirements before hosting. The local history file is not a substitute for a database.
+The demo needs no further work. Optional follow-ups:
+
+1. Resume automatic polling after a page reload while a submission is still processing.
+2. Move the Playwright browser suites into the repository so `npm test` (or a separate script) covers the DOM wiring.
+3. Before any hosting: define authentication, secure storage, access controls and deployment requirements. The local history file is not a substitute for a database.
 
 ## 11. Important Files and Configuration
 
