@@ -565,6 +565,7 @@ input[type=checkbox] {
 
 .batch-results .state {
     justify-self: end;
+    max-width: none;
     white-space: nowrap;
 }
 
@@ -869,6 +870,10 @@ footer {
 
     .state {
         max-width: 100%;
+    }
+
+    .batch-results small {
+        grid-column: 1 / -1;
     }
 
     .fields,
