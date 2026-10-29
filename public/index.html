@@ -43,9 +43,10 @@
                         </div>
                     </div>
                 </div>
-                <label class="drop" for="file"><span class="upload-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m6.5 9.5 5.5-5.5 5.5 5.5"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg></span><b id="filename">Choose a bill or drop it here</b><small>Images and PDF documents supported</small><input id="file" type="file" accept="image/jpeg,image/png,image/webp,application/pdf"></label>
+                <label class="drop" for="file"><span class="upload-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m6.5 9.5 5.5-5.5 5.5 5.5"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></svg></span><b id="filename">Choose a bill or drop it here</b><small>Images and PDF documents supported · select several to send them one by one</small><input id="file" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple></label>
                 <div class="actions"><button id="extract" class="primary" disabled>Extract bill details <span aria-hidden="true">→</span></button></div>
                 <p id="message" class="feedback" role="status" aria-live="polite"></p>
+                <ul id="batch-results" class="batch-results" aria-label="Uploaded invoices" hidden></ul>
             </section>
 
             <section class="card" id="review-section" aria-labelledby="review-title">

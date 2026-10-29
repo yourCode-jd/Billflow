@@ -101,6 +101,15 @@ The local Demo and Submission Status exports contain edits from prior work, incl
 
 The Demo export's `Invoices` mapping lists `supplier_name`, `invoice_number`, `date`, `gstin`, `payment_mode`, line-item fields, totals, review/validation fields, calculated totals, `currency`, and `discount`; its normal append schema does not list `submission_id`. The normal `Invoice Reviews` append schema likewise omits `submission_id`; the duplicate review append includes it. Confirm and align the physical sheet headers and every relevant append/read mapping before relying on recovery.
 
+**Gemini failure recovery (prepared 2026-10-29; manual n8n setup required).** Before this change, when the Gemini node failed after its 3 tries (2 s apart), the n8n execution stopped before any Sheets write. The status workflow could only report "no rows yet", so the dashboard showed `processing` for its full 7-minute window, then **Still processing**, and a manual re-upload started another long wait. Two edited exports sit next to the originals in `~/Downloads/Extra/AI_imgs/bill-flow/` (the originals are unchanged):
+
+- `Bill AI Agent - Demo (failure recovery).json`: on `02 - Extract Invoice with Gemini`, Retry On Fail is set to 5 tries, 5000 ms apart, and On Error to *Continue (using error output)*. The error output goes to a new `02F - Record Extraction Failure` node, a copy of the existing duplicate-marker node, which appends to **Invoice Reviews** a row with `submission_id`, `review_status = Extraction Failed`, `validation_status = Failed`, and the error text in `review_notes`. No invoice rows are written. Every other node and connection is identical.
+- `Bill AI Agent - Submission Status (failure recovery).json`: in `Build Submission Status`, rows marked *Extraction Failed* are ignored for normal results. When they are the only rows for an ID, the workflow returns `found: false, state: 'failed'` with the error text. Saved and duplicate results are unchanged.
+
+Apply both in n8n by hand (edit the two nodes and add the one node, or import and swap), then save and activate. They have been checked only with mocked data, not in n8n Cloud.
+
+The dashboard treats `failed` as final. It re-sends transient failures (503/429/overloaded/timeout/connection errors) automatically after 30 s and then 2 min, each time with a new submission ID, and shows other failures as **Extraction failed** with a **Retry** button. Without the n8n changes, the dashboard behaves as before.
+
 `n8n/WORKFLOW.md` documents a separate local example workflow. It is setup guidance, not evidence that the exported Cloud workflows are deployed.
 
 ## 7. Tests and Validation

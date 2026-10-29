@@ -71,6 +71,8 @@ export function submissionResultKind(status,submissionId,storage=globalThis.loca
     }
     if (storage?.getItem(LAST_DUPLICATE_SUBMISSION_STORAGE_KEY)===submissionId) return 'duplicate';
   } catch {}
+  // n8n records an extraction failure (e.g. Gemini 503) so a failed run is not mistaken for one still processing.
+  if (status&&!status.found&&status.state==='failed') return 'failed';
   return status?.found ? 'found' : 'processing';
 }
 export async function restoreSubmissionState({storage=globalThis.localStorage,fetchStatus,submissionId:providedSubmissionId}) {
@@ -100,6 +102,74 @@ export function historyTotalText(invoice) {
 // n8n acknowledges an upload before saving it, and slow runs have taken ~6 minutes, so the dashboard re-checks
 // with backoff capped at 30 s: at most 20 requests over 7 minutes.
 export const STATUS_POLL_DELAYS_MS=[2000,3000,5000,10000,15000,15000,20000,20000,...Array(11).fill(30000)];
+// A failed extraction caused by a temporary Gemini/network problem is sent again automatically, at most twice.
+export const EXTRACTION_RETRY_DELAYS_MS=[30000,120000];
+export function isTransientExtractionFailure(message) {
+  return /\b(429|500|502|503|504)\b|overload|unavailable|try again|rate limit|quota|resource.?exhausted|timed? ?out|timeout|deadline|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|network|connection/i.test(String(message||''));
+}
+// Follows one invoice; when n8n reports a transient extraction failure, uploads the same file again
+// (a new submission ID each time) after a bounded backoff. Other outcomes are returned unchanged.
+export async function followWithExtractionRetries({submissionId,follow,reupload,delays=EXTRACTION_RETRY_DELAYS_MS,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),isCancelled=()=>false,onRetry=()=>{}}) {
+  for (let retry=0;;retry++) {
+    const result=await follow(submissionId);
+    const reason=result.status?.message||'';
+    if (result.kind!=='failed'||isCancelled()) return {...result,retries:retry};
+    if (retry>=delays.length||!isTransientExtractionFailure(reason)) return {...result,retries:retry,transient:isTransientExtractionFailure(reason)};
+    onRetry({retry:retry+1,total:delays.length,delayMs:delays[retry],submissionId,reason});
+    await sleep(delays[retry]);
+    if (isCancelled()) return {kind:'cancelled',submissionId,retries:retry};
+    let data;
+    try { data=await reupload(); }
+    catch (e) { return {kind:'upload-failed',submissionId,error:e?.message||'Upload failed.',retries:retry+1}; }
+    if (isCancelled()) return {kind:'cancelled',submissionId:data.submission_id,retries:retry+1};
+    if (data.duplicate===true) return {kind:'duplicate',submissionId:data.submission_id,uploadDuplicate:true,retries:retry+1};
+    submissionId=data.submission_id;
+  }
+}
+export function extractionFailureText(result) {
+  const reason=result.status?.message||'Gemini could not extract this invoice.';
+  const retried=result.retries?` after ${result.retries} automatic ${result.retries===1?'retry':'retries'}`:'';
+  return `${reason}${/[.!?]$/.test(reason)?'':'.'} Extraction failed${retried}; nothing was saved to Google Sheets.`;
+}
+export const UPLOAD_TYPES=['image/jpeg','image/png','image/webp','application/pdf'];
+export const MAX_UPLOAD_FILES=10;
+export const invoiceFileKey=file=>[file.name,file.size,file.lastModified,file.type].join('|');
+// Keeps each supported file once (in selection order) and explains every file left out.
+export function selectInvoiceFiles(list,max=MAX_UPLOAD_FILES) {
+  const files=[],rejected=[],seen=new Set();
+  for (const file of Array.from(list||[])) {
+    const key=invoiceFileKey(file);
+    if (seen.has(key)) {rejected.push({name:file.name,reason:'Selected more than once; it is sent only once.'});continue;}
+    seen.add(key);
+    if (!UPLOAD_TYPES.includes(file.type)) rejected.push({name:file.name,reason:'Please choose JPG, PNG, WebP or PDF.'});
+    else if (file.size>10*1024*1024) rejected.push({name:file.name,reason:'The file must be smaller than 10 MB.'});
+    else if (files.length>=max) rejected.push({name:file.name,reason:`Only ${max} files can be sent at once.`});
+    else files.push(file);
+  }
+  return {files,rejected};
+}
+// Sends files one at a time through the single-invoice upload. A failure is recorded for that file only,
+// and files already accepted (keys in `sent`) are skipped so a second click does not resend them.
+export async function uploadInvoiceBatch({files,upload,sent=new Set(),onResult=()=>{}}) {
+  const results=[];
+  for (const [index,file] of files.entries()) {
+    const key=invoiceFileKey(file);
+    let result;
+    if (sent.has(key)) result={file,status:'skipped'};
+    else {
+      try {
+        const data=await upload(file);
+        sent.add(key);
+        result={file,status:data.duplicate===true?'duplicate':'accepted',submissionId:data.submission_id,message:data.message};
+      } catch (e) {
+        result={file,status:'failed',error:e?.message||'Upload failed.'};
+      }
+    }
+    results.push(result);
+    onResult(result,index);
+  }
+  return results;
+}
 export const STATUS_POLL_MAX_WAIT_MS=STATUS_POLL_DELAYS_MS.reduce((sum,ms)=>sum+ms,0);
 export function formatWait(ms) {
   const seconds=Math.round(ms/1000), minutes=Math.floor(seconds/60), rest=seconds%60;
@@ -114,7 +184,7 @@ export async function pollSubmissionStatus({fetchStatus,submissionId,storage=glo
     if (isCancelled()) return {kind:'cancelled',submissionId,attempts:attempt-1};
     result=await restoreSubmissionState({storage,fetchStatus,submissionId});
     if (isCancelled()) return {kind:'cancelled',submissionId,attempts:attempt};
-    if (result.kind==='found'||result.kind==='duplicate'||result.kind==='none') return {...result,attempts:attempt};
+    if (['found','duplicate','failed','none'].includes(result.kind)) return {...result,attempts:attempt};
     errors=result.kind==='error'?errors+1:0;
     if (errors>=MAX_CONSECUTIVE_STATUS_ERRORS) return {...result,attempts:attempt};
     if (attempt>delays.length) break;
@@ -228,7 +298,7 @@ export function stateTone(text) {
   if (/duplicate/.test(label)) return 'warning';
   if (/unavailable|error|fail|reject/.test(label)) return 'danger';
   if (/needs|review|warning|mismatch/.test(label)&&!/approved/.test(label)) return 'warning';
-  if (/processing|loading|pending/.test(label)) return 'progress';
+  if (/processing|loading|pending|retrying|uploading/.test(label)) return 'progress';
   if (/saved|sent|approved|valid|complete|found/.test(label)) return 'success';
   return 'neutral';
 }
@@ -236,7 +306,7 @@ const ITEM_LABELS={description:'Description',quantity:'Quantity',unit_price:'Uni
 
 function init() {
   const $=id=>document.getElementById(id);
-  let file=null, rows=[], currentSubmissionId=null, history=[];
+  let selected=[], sent=new Set(), rows=[], currentSubmissionId=null, history=[];
   let csvPresets=readCsvPresets();
   let csvMapping=csvPresets.activeId?csvMappingFromColumns(csvPresets.presets.find(preset=>preset.id===csvPresets.activeId).columns):defaultCsvMapping();
   const fields=['supplier','invoice_number','date','currency','subtotal','discount','tax','round_off','total'];
@@ -247,12 +317,21 @@ function init() {
   const setEmpty=text=>{$('review').hidden=true;$('empty').hidden=false;$('empty').textContent=text};
   const getInvoice=()=>{const invoice={};for(const k of fields) invoice[k]=['subtotal','discount','tax','round_off','total'].includes(k)?num($(k).value):$(k).value.trim();invoice.items=rows.map(r=>({description:r.description,quantity:num(r.quantity),unit_price:num(r.unit_price),amount:num(r.amount),gst_percent:gstRateForStorage(r.gst_percent)}));return invoice};
   const num=v=>v===''||v===null||v===undefined?null:Number(v);
-  const setFile=f=>{if(!f)return;if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(f.type)){msg('message','Please choose JPG, PNG, WebP or PDF.');return}if(f.size>10*1024*1024){msg('message','The file must be smaller than 10 MB.');return}file=f;$('filename').textContent=f.name;$('extract').disabled=false;msg('message','')};
-  $('file').addEventListener('change',e=>setFile(e.target.files[0]));
+  const setFiles=list=>{
+    if(!list||!list.length)return;
+    const {files,rejected}=selectInvoiceFiles(list);
+    if(!files.length){msg('message',rejected[0].reason);return}
+    selected=files;sent=new Set();
+    $('filename').textContent=files.length===1?files[0].name:`${files.length} invoices selected`;
+    $('extract').disabled=false;
+    msg('message',rejected.map(r=>`${r.name}: ${r.reason}`).join(' '));
+  };
+  // Clearing the input lets the same files be chosen again (to resend them) and still fire a change.
+  $('file').addEventListener('change',e=>{setFiles(e.target.files);e.target.value=''});
   const drop=document.querySelector('.drop');
   drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('drag')});
   drop.addEventListener('dragleave',()=>drop.classList.remove('drag'));
-  drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('drag');setFile(e.dataTransfer.files[0])});
+  drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('drag');setFiles(e.dataTransfer.files)});
   const renderRows=()=>{const body=$('rows');body.replaceChildren();rows.forEach((item,i)=>{const tr=document.createElement('tr');for(const k of ['description','quantity','unit_price','amount','gst_percent']){const td=document.createElement('td');td.dataset.label=ITEM_LABELS[k];const input=document.createElement('input');input.setAttribute('aria-label',`Row ${i+1} ${k}`);input.value=item[k]??'';input.type=k==='description'?'text':'number';if(input.type==='number'){input.step='any';input.inputMode='decimal'}input.addEventListener('input',()=>{rows[i][k]=input.value;$('approved').checked=false;sync()});td.append(input);tr.append(td)}const td=document.createElement('td');const b=document.createElement('button');b.className='remove';b.textContent='×';b.setAttribute('aria-label',`Remove row ${i+1}`);b.onclick=()=>{rows.splice(i,1);$('approved').checked=false;renderRows();sync()};td.append(b);tr.append(td);body.append(tr)})};
   const sync=()=>{const checked=$('approved').checked;$('csv').disabled=!checked;$('save').disabled=!checked};
   const fetchSubmissionStatus=async submissionId=>{const response=await fetch(`/api/submissions/${encodeURIComponent(submissionId)}/status`);let data={};try{data=await response.json()}catch{}if(!response.ok)throw Error((data.error||'Could not restore submission status.')+(data.code?` [${data.code}]`:''));return data};
@@ -281,7 +360,8 @@ function init() {
     currentSubmissionId=isSubmissionId(status.submission_id)?status.submission_id:null;
     void loadHistory();
     const restored=restoredInvoiceFields(status);
-    for (const [key,value] of Object.entries(restored)) if (value!==''&&value!==null&&value!==undefined) $(key).value=value;
+    // Every field is replaced, so values from a previously shown invoice never carry over.
+    for (const [key,value] of Object.entries(restored)) $(key).value=value??'';
     rows=restoredInvoiceItems(status.items);
     renderRows();
     $('approved').checked=false;
@@ -317,6 +397,14 @@ function init() {
       }
       return;
     }
+    if (result.kind==='failed') {
+      $('state').textContent='Extraction failed';
+      setEmpty(extractionFailureText(result));
+      $('recovery').hidden=false;
+      $('recovery-id').value=submissionId;
+      msg('recovery-message','Nothing was saved for this submission. Upload the invoice again to retry.');
+      return;
+    }
     if (result.kind==='error') {
       $('state').textContent='Status unavailable';
       setEmpty('Could not restore the last submission. Check your connection and try again.');
@@ -327,7 +415,7 @@ function init() {
   };
   // Follow an accepted upload until n8n reports a final result. A newer accepted upload or a valid manual restore cancels it.
   let pollToken=0;
-  const followUpload=async submissionId=>{
+  const followUpload=async(submissionId,file)=>{
     const token=++pollToken;
     const current=()=>token===pollToken;
     // Recovery stays available while waiting; restoring another ID cancels this follow-up.
@@ -336,13 +424,29 @@ function init() {
     msg('recovery-message','Checking this submission automatically. To open a different saved invoice, enter its submission ID.');
     $('state').textContent='Processing';
     setEmpty('Waiting for the invoice to be processed…');
-    const result=await pollSubmissionStatus({fetchStatus:fetchSubmissionStatus,submissionId,isCancelled:()=>!current(),onProgress:({attempt,total,nextDelayMs,elapsedMs})=>{
-      $('state').textContent='Processing';
-      setEmpty(`Processing the invoice… ${elapsedMs?`${formatWait(elapsedMs)} so far; `:''}checking again in ${formatWait(nextDelayMs)} (check ${attempt} of ${total}). Some invoices take up to ${formatWait(STATUS_POLL_MAX_WAIT_MS)}.`);
-    }});
+    const result=await followWithExtractionRetries({submissionId,isCancelled:()=>!current(),
+      follow:id=>{$('recovery-id').value=id;return pollSubmissionStatus({fetchStatus:fetchSubmissionStatus,submissionId:id,isCancelled:()=>!current(),onProgress:({attempt,total,nextDelayMs,elapsedMs})=>{
+        $('state').textContent='Processing';
+        setEmpty(`Processing the invoice… ${elapsedMs?`${formatWait(elapsedMs)} so far; `:''}checking again in ${formatWait(nextDelayMs)} (check ${attempt} of ${total}). Some invoices take up to ${formatWait(STATUS_POLL_MAX_WAIT_MS)}.`);
+      }})},
+      reupload:()=>{msg('message','Sending the invoice again…');return uploadInvoiceFile(file)},
+      onRetry:({retry,total,delayMs,reason})=>{
+        $('state').textContent='Retrying';
+        setEmpty(`Gemini was temporarily unavailable (${reason}). Sending the invoice again in ${formatWait(delayMs)} (retry ${retry} of ${total}). Nothing was saved for the failed attempt.`);
+      }});
+    submissionId=result.submissionId||submissionId;
     if (!current()||result.kind==='cancelled') return;
-    if (result.kind==='duplicate') {showDuplicate();msg('message',DUPLICATE_SUBMISSION_MESSAGE);return;}
+    if (result.kind==='duplicate') {if(result.uploadDuplicate)rememberDuplicateSubmissionId(submissionId);showDuplicate();msg('message',DUPLICATE_SUBMISSION_MESSAGE);return;}
     if (result.kind==='found') {$('recovery').hidden=true;renderStatus(result.status);msg('message','Invoice processed.');return;}
+    if (result.kind==='failed'||result.kind==='upload-failed') {
+      $('state').textContent='Extraction failed';
+      setEmpty(result.kind==='failed'?extractionFailureText(result):`The automatic retry could not be sent: ${result.error}`);
+      $('recovery').hidden=false;
+      $('recovery-id').value=submissionId;
+      msg('recovery-message','Press Extract again to retry this invoice, or try later if Gemini is busy.');
+      msg('message','Extraction failed. The file is still selected.');
+      return;
+    }
     $('recovery').hidden=false;
     $('recovery-id').value=submissionId;
     if (result.kind==='timeout') {
@@ -368,7 +472,72 @@ function init() {
   $('approved').onchange=sync;
   for(const k of fields)$(k).addEventListener('input',()=>{$('approved').checked=false;sync()});
   $('add').onclick=()=>{rows.push({description:'',quantity:null,unit_price:null,amount:null});$('approved').checked=false;renderRows();sync()};
-  $('extract').onclick=async()=>{if(!file)return;$('extract').disabled=true;$('duplicate-warning').hidden=true;msg('message','Sending invoice for processing…');try{const base64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file)});const response=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base64,mimeType:file.type,fileName:file.name})});const data=await response.json();if(!response.ok)throw Error((data.error||'Upload failed.')+(data.code?` [${data.code}]`:''));if(!rememberSubmissionId(data.submission_id))throw Error('Upload was accepted, but its submission ID was invalid.');pollToken++;if(data.duplicate===true){rememberDuplicateSubmissionId(data.submission_id);showDuplicate();msg('message',data.message||DUPLICATE_SUBMISSION_MESSAGE);return;}msg('message',data.message||'Accepted for processing — not yet saved.');void followUpload(data.submission_id)}catch(e){msg('message',e.message||'Upload failed.')}finally{$('extract').disabled=false}};
+  const uploadInvoiceFile=async file=>{const base64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=reject;reader.readAsDataURL(file)});const response=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base64,mimeType:file.type,fileName:file.name})});const data=await response.json();if(!response.ok)throw Error((data.error||'Upload failed.')+(data.code?` [${data.code}]`:''));if(!rememberSubmissionId(data.submission_id))throw Error('Upload was accepted, but its submission ID was invalid.');return data};
+  const extractOne=async file=>{$('extract').disabled=true;$('duplicate-warning').hidden=true;msg('message','Sending invoice for processing…');try{const data=await uploadInvoiceFile(file);pollToken++;if(data.duplicate===true){rememberDuplicateSubmissionId(data.submission_id);showDuplicate();msg('message',data.message||DUPLICATE_SUBMISSION_MESSAGE);return;}msg('message',data.message||'Accepted for processing — not yet saved.');void followUpload(data.submission_id,file)}catch(e){msg('message',e.message||'Upload failed.')}finally{$('extract').disabled=false}};
+  // Several files: each gets its own row, submission ID and status checks. Rows never write to each other,
+  // and the review panel changes only when a processed row is opened.
+  const batchRow=file=>{
+    const li=document.createElement('li');
+    const name=document.createElement('b');name.textContent=file.name;
+    const state=document.createElement('span');state.className='state';
+    const detail=document.createElement('small');
+    const action=document.createElement('button');action.type='button';action.className='secondary';action.hidden=true;
+    li.append(name,state,detail,action);
+    $('batch-results').append(li);$('batch-results').hidden=false;
+    const set=(label,text='')=>{state.textContent=label;state.dataset.tone=stateTone(label);detail.textContent=text};
+    return {set,action};
+  };
+  const followBatchRow=async(row,file,submissionId)=>{
+    row.action.hidden=true;
+    const result=await followWithExtractionRetries({submissionId,
+      follow:id=>pollSubmissionStatus({fetchStatus:fetchSubmissionStatus,submissionId:id,onProgress:({attempt,total})=>row.set('Processing',`Check ${attempt} of ${total} · ID ${id}`)}),
+      reupload:()=>{row.set('Uploading','Sending again after a failed extraction…');return uploadInvoiceFile(file)},
+      onRetry:({retry,total,delayMs,submissionId:id,reason})=>row.set('Retrying',`Gemini unavailable (${reason}) · sending again in ${formatWait(delayMs)}, retry ${retry} of ${total} · failed ID ${id}`)});
+    submissionId=result.submissionId||submissionId;
+    if (result.kind==='duplicate') {if(result.uploadDuplicate)rememberDuplicateSubmissionId(submissionId);return row.set('Duplicate',`Already submitted; no duplicate record was created · ID ${submissionId}`);}
+    if (result.kind==='found') {
+      row.set([result.status.state,result.status.review_status,result.status.validation_status].filter(Boolean).join(' · ')||'Saved',`${result.status.invoice_number?`Invoice ${result.status.invoice_number} · `:''}ID ${submissionId}`);
+      row.action.textContent='Open';row.action.hidden=false;
+      // Opening replaces whatever the review panel shows, like a manual restore.
+      row.action.onclick=()=>{pollToken++;$('recovery').hidden=true;renderStatus(result.status);msg('message',`Showing ${file.name}.`);$('review').scrollIntoView?.({block:'start'})};
+      return;
+    }
+    if (result.kind==='failed'||result.kind==='upload-failed') {
+      row.set('Extraction failed',result.kind==='failed'?`${extractionFailureText(result)} · ID ${submissionId}`:`Automatic retry could not be sent: ${result.error}`);
+      // Manual retry re-sends only this file; nothing was saved for the failed submission.
+      row.action.textContent='Retry';row.action.hidden=false;
+      row.action.onclick=async()=>{
+        row.action.hidden=true;row.set('Uploading');
+        let data;
+        try {data=await uploadInvoiceFile(file)} catch(e) {row.set('Upload failed',e.message||'Upload failed.');row.action.hidden=false;return}
+        if (data.duplicate===true) {rememberDuplicateSubmissionId(data.submission_id);return row.set('Duplicate',`${data.message||DUPLICATE_SUBMISSION_MESSAGE} · ID ${data.submission_id}`);}
+        row.set('Processing',`Accepted · ID ${data.submission_id}`);
+        void followBatchRow(row,file,data.submission_id);
+      };
+      return;
+    }
+    row.set(result.kind==='timeout'?'Still processing':'Status unavailable',`ID ${submissionId}`);
+    row.action.textContent='Check again';row.action.hidden=false;
+    row.action.onclick=()=>{$('recovery').hidden=false;$('recovery-id').value=submissionId;$('recover').click()};
+  };
+  const extractBatch=async files=>{
+    $('extract').disabled=true;
+    msg('message',`Sending ${files.length} invoices one at a time…`);
+    const rowsByIndex=files.map(file=>{const row=batchRow(file);row.set('Waiting');return row});
+    try {
+      const results=await uploadInvoiceBatch({files,sent,upload:file=>{rowsByIndex[files.indexOf(file)].set('Uploading');return uploadInvoiceFile(file)},onResult:(result,index)=>{
+        const row=rowsByIndex[index];
+        if (result.status==='failed') return row.set('Upload failed',result.error);
+        if (result.status==='skipped') return row.set('Already sent','Choose the file again to resend it.');
+        if (result.status==='duplicate') {rememberDuplicateSubmissionId(result.submissionId);return row.set('Duplicate',`${result.message||DUPLICATE_SUBMISSION_MESSAGE} · ID ${result.submissionId}`);}
+        row.set('Processing',`Accepted · ID ${result.submissionId}`);
+        void followBatchRow(row,result.file,result.submissionId);
+      }});
+      const count=status=>results.filter(r=>r.status===status).length;
+      msg('message',`${count('accepted')} accepted, ${count('duplicate')} duplicate, ${count('failed')} failed${count('skipped')?`, ${count('skipped')} already sent`:''}. Each invoice is checked separately below.`);
+    } finally {$('extract').disabled=false}
+  };
+  $('extract').onclick=()=>{if(!selected.length)return;return selected.length===1?extractOne(selected[0]):extractBatch(selected)};
   $('csv').onclick=async()=>{try{const r=await fetch('/api/csv',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({invoice:getInvoice(),columns:csvColumnsFromMapping(csvMapping)})});if(!r.ok)throw Error('Could not generate CSV.');const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='invoice.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);msg('save-message','CSV downloaded. Review it before importing into accounting software.')}catch(e){msg('save-message',e.message)}};
   $('save').onclick=async()=>{msg('save-message','Sending to n8n…');try{const r=await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({invoice:getInvoice(),confirmedWarnings:true,submission_id:currentSubmissionId})});const data=await r.json();if(data.history_saved)void loadHistory();if(!r.ok)throw Error(data.error+(data.history_saved?' The approved invoice was saved to invoice history.':''));msg('save-message',data.message+(data.history_saved===false?' It could not be saved to invoice history.':''));$('state').textContent='Sent to n8n'}catch(e){msg('save-message',e.message)}};
   const selectedHistoryIds=()=>[...$('history-rows').querySelectorAll('input[type=checkbox]:checked')].map(box=>box.value);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {CSV_FIELDS,DEFAULT_CSV_COLUMNS} from '../server/invoice.js';
-import {formatWait,pollSubmissionStatus,STATUS_POLL_DELAYS_MS,STATUS_POLL_MAX_WAIT_MS,addCsvPreset,CSV_FIELD_OPTIONS,CSV_PRESETS_STORAGE_KEY,csvColumnsFromMapping,csvMappingFromColumns,defaultCsvMapping,deleteCsvPreset,moveCsvColumn,parseCsv,readCsvPresets,renameCsvPreset,sameCsvColumns,updateCsvPreset,writeCsvPresets,displayGstPercent,historyCsvFilename,historyExportBody,historyTotalText,stateTone,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,statusWarningText,submissionResultKind} from './app.js';
+import {EXTRACTION_RETRY_DELAYS_MS,extractionFailureText,followWithExtractionRetries,isTransientExtractionFailure,invoiceFileKey,MAX_UPLOAD_FILES,selectInvoiceFiles,uploadInvoiceBatch,formatWait,pollSubmissionStatus,STATUS_POLL_DELAYS_MS,STATUS_POLL_MAX_WAIT_MS,addCsvPreset,CSV_FIELD_OPTIONS,CSV_PRESETS_STORAGE_KEY,csvColumnsFromMapping,csvMappingFromColumns,defaultCsvMapping,deleteCsvPreset,moveCsvColumn,parseCsv,readCsvPresets,renameCsvPreset,sameCsvColumns,updateCsvPreset,writeCsvPresets,displayGstPercent,historyCsvFilename,historyExportBody,historyTotalText,stateTone,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,statusWarningText,submissionResultKind} from './app.js';
 
 const storage=initial=>{const values=new Map(Object.entries(initial||{}));return {getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)}};
 
@@ -303,4 +303,121 @@ test('upload follow-up cancelled late in a long wait makes no further requests',
   const callsAtCancel=n8n.calls();
   assert.ok(callsAtCancel>10&&callsAtCancel<20);
   assert.equal(result.attempts,callsAtCancel);
+});
+
+const invoiceFile=(name,{type='image/png',size=1000,lastModified=1}={})=>({name,type,size,lastModified});
+test('multiple selection keeps each supported file once, in order, and explains the rest',()=>{
+  const a=invoiceFile('a.png'),b=invoiceFile('b.pdf',{type:'application/pdf'});
+  const {files,rejected}=selectInvoiceFiles([a,invoiceFile('notes.txt',{type:'text/plain'}),b,{...a},invoiceFile('big.jpg',{type:'image/jpeg',size:10*1024*1024+1})]);
+  assert.deepEqual(files,[a,b]);
+  assert.deepEqual(rejected,[
+    {name:'notes.txt',reason:'Please choose JPG, PNG, WebP or PDF.'},
+    {name:'a.png',reason:'Selected more than once; it is sent only once.'},
+    {name:'big.jpg',reason:'The file must be smaller than 10 MB.'}
+  ]);
+  // Same name but a different file is not a duplicate.
+  assert.equal(selectInvoiceFiles([a,invoiceFile('a.png',{size:2000})]).files.length,2);
+  const many=Array.from({length:MAX_UPLOAD_FILES+2},(_,i)=>invoiceFile(`f${i}.png`));
+  const capped=selectInvoiceFiles(many);
+  assert.equal(capped.files.length,MAX_UPLOAD_FILES);
+  assert.deepEqual(capped.rejected.map(r=>r.name),[`f${MAX_UPLOAD_FILES}.png`,`f${MAX_UPLOAD_FILES+1}.png`]);
+});
+test('a single selected file behaves as before',()=>{
+  const a=invoiceFile('a.png');
+  assert.deepEqual(selectInvoiceFiles([a]),{files:[a],rejected:[]});
+  assert.deepEqual(selectInvoiceFiles([invoiceFile('a.gif',{type:'image/gif'})]).files,[]);
+});
+test('batch upload processes each file independently and continues after a failure',async()=>{
+  const files=[invoiceFile('one.png'),invoiceFile('two.png'),invoiceFile('three.png'),invoiceFile('four.png')];
+  const uploaded=[];const seen=[];
+  const upload=async file=>{
+    uploaded.push(file.name);
+    if (file.name==='two.png') throw Error('The invoice-processing service is temporarily unavailable. [N8N_WEBHOOK_UNAVAILABLE]');
+    if (file.name==='three.png') return {submission_id:`id-${file.name}`,duplicate:true,message:'Duplicate bill detected'};
+    return {submission_id:`id-${file.name}`,message:'Accepted for processing — not yet saved.'};
+  };
+  const results=await uploadInvoiceBatch({files,upload,onResult:(result,index)=>seen.push([index,result.file.name,result.status])});
+  assert.deepEqual(uploaded,['one.png','two.png','three.png','four.png']);
+  assert.deepEqual(results.map(r=>[r.file.name,r.status,r.submissionId??r.error]),[
+    ['one.png','accepted','id-one.png'],
+    ['two.png','failed','The invoice-processing service is temporarily unavailable. [N8N_WEBHOOK_UNAVAILABLE]'],
+    ['three.png','duplicate','id-three.png'],
+    ['four.png','accepted','id-four.png']
+  ]);
+  assert.deepEqual(seen,[[0,'one.png','accepted'],[1,'two.png','failed'],[2,'three.png','duplicate'],[3,'four.png','accepted']]);
+});
+test('batch upload does not resend accepted files on a second click but retries failed ones',async()=>{
+  const files=[invoiceFile('one.png'),invoiceFile('two.png')];
+  const sent=new Set();let failTwo=true;const calls=[];
+  const upload=async file=>{calls.push(file.name);if(file.name==='two.png'&&failTwo)throw Error('Upload failed.');return {submission_id:`id-${file.name}`}};
+  await uploadInvoiceBatch({files,upload,sent});
+  failTwo=false;
+  const second=await uploadInvoiceBatch({files,upload,sent});
+  assert.deepEqual(calls,['one.png','two.png','two.png']);
+  assert.deepEqual(second.map(r=>r.status),['skipped','accepted']);
+  assert.deepEqual([...sent],files.map(invoiceFileKey));
+});
+
+const failedStatus=message=>({found:false,submission_id:pollId,state:'failed',review_status:'Extraction Failed',items:[],message});
+test('an extraction failure recorded by n8n is final instead of "processing"',async()=>{
+  assert.equal(submissionResultKind(failedStatus('Gemini extraction failed: 503'),pollId,storage()),'failed');
+  assert.equal(submissionResultKind({found:false,state:'processing'},pollId,storage()),'processing');
+  const n8n=scripted([failedStatus('Gemini extraction failed: The service is currently unavailable. [503]')]);
+  const result=await pollSubmissionStatus({fetchStatus:n8n.fetchStatus,submissionId:pollId,storage:storage(),sleep:fakeSleep().sleep});
+  assert.equal(result.kind,'failed');
+  assert.equal(n8n.calls(),1);
+});
+test('classifies transient Gemini and connection errors',()=>{
+  for (const message of ['Gemini extraction failed: The service is currently unavailable. [503 Service Unavailable]','The model is overloaded. Please try again later.','Gemini extraction failed: [429 Too Many Requests] Resource has been exhausted','read ECONNRESET','connect ETIMEDOUT 142.250.0.1:443','socket hang up','Request timed out'])
+    assert.equal(isTransientExtractionFailure(message),true,message);
+  for (const message of ['Gemini extraction failed: [400 Bad Request] Unsupported MIME type','API key not valid. Please pass a valid API key.','',undefined])
+    assert.equal(isTransientExtractionFailure(message),false,String(message));
+});
+const sequence=(...steps)=>{let i=0;return async()=>{const step=steps[Math.min(i++,steps.length-1)];if(step instanceof Error)throw step;return step}};
+test('a transient extraction failure is sent again after a backoff, with a new submission ID',async()=>{
+  const followed=[];const waits=[];const retries=[];
+  const follow=async id=>{followed.push(id);return id==='retry-1'?{kind:'found',submissionId:id,status:{found:true,items:[{}]}}:{kind:'failed',submissionId:id,status:failedStatus('Gemini extraction failed: [503] overloaded')}};
+  let uploads=0;
+  const result=await followWithExtractionRetries({submissionId:'first',follow,reupload:async()=>{uploads++;return {submission_id:'retry-1'}},sleep:async ms=>{waits.push(ms)},onRetry:r=>retries.push([r.retry,r.total,r.submissionId])});
+  assert.equal(result.kind,'found');
+  assert.equal(result.submissionId,'retry-1');
+  assert.equal(result.retries,1);
+  assert.deepEqual(followed,['first','retry-1']);
+  assert.equal(uploads,1);
+  assert.deepEqual(waits,[EXTRACTION_RETRY_DELAYS_MS[0]]);
+  assert.deepEqual(retries,[[1,2,'first']]);
+});
+test('extraction retries are bounded and report the failure',async()=>{
+  let uploads=0;const waits=[];
+  const result=await followWithExtractionRetries({submissionId:'first',follow:async id=>({kind:'failed',submissionId:id,status:failedStatus('Gemini extraction failed: The service is currently unavailable.')}),reupload:async()=>({submission_id:`retry-${++uploads}`}),sleep:async ms=>{waits.push(ms)}});
+  assert.equal(result.kind,'failed');
+  assert.equal(result.retries,2);
+  assert.equal(uploads,2);
+  assert.deepEqual(waits,EXTRACTION_RETRY_DELAYS_MS);
+  assert.equal(EXTRACTION_RETRY_DELAYS_MS.reduce((a,b)=>a+b,0),150000);
+  assert.match(extractionFailureText(result),/Extraction failed after 2 automatic retries; nothing was saved to Google Sheets\.$/);
+});
+test('a permanent extraction failure is not retried automatically',async()=>{
+  let uploads=0;
+  const result=await followWithExtractionRetries({submissionId:'first',follow:async id=>({kind:'failed',submissionId:id,status:failedStatus('Gemini extraction failed: [400 Bad Request] Unsupported MIME type')}),reupload:async()=>{uploads++;return {submission_id:'x'}},sleep:async()=>{}});
+  assert.equal(result.kind,'failed');
+  assert.equal(result.transient,false);
+  assert.equal(uploads,0);
+});
+test('extraction retry stops when cancelled, when re-sending fails, or when the re-sent file is a duplicate',async()=>{
+  const failing=async id=>({kind:'failed',submissionId:id,status:failedStatus('503 unavailable')});
+  let uploads=0;let cancelled=false;
+  const cancelledResult=await followWithExtractionRetries({submissionId:'first',follow:failing,reupload:async()=>{uploads++;return {submission_id:'x'}},sleep:async()=>{cancelled=true},isCancelled:()=>cancelled});
+  assert.equal(cancelledResult.kind,'cancelled');
+  assert.equal(uploads,0);
+  const uploadFailed=await followWithExtractionRetries({submissionId:'first',follow:failing,reupload:sequence(Error('The invoice-processing service is temporarily unavailable. Retry later.')),sleep:async()=>{}});
+  assert.equal(uploadFailed.kind,'upload-failed');
+  assert.match(uploadFailed.error,/temporarily unavailable/);
+  const duplicate=await followWithExtractionRetries({submissionId:'first',follow:failing,reupload:sequence({submission_id:'dup-id',duplicate:true}),sleep:async()=>{}});
+  assert.equal(duplicate.kind,'duplicate');
+  assert.equal(duplicate.submissionId,'dup-id');
+  assert.equal(duplicate.uploadDuplicate,true);
+  // Other outcomes pass through without any retry.
+  const found=await followWithExtractionRetries({submissionId:'first',follow:async id=>({kind:'timeout',submissionId:id}),reupload:async()=>assert.fail('no re-upload'),sleep:async()=>assert.fail('no wait')});
+  assert.equal(found.kind,'timeout');
 });

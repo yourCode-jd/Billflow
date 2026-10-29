@@ -228,6 +228,15 @@ test('requests and normalizes a submission status without exposing the server cr
   assert.equal(Object.hasOwn(normalStatus,'duplicate'),false);
   assert.equal(normalizeSubmissionStatus({found:false,state:'processing'},'123e4567-e89b-42d3-a456-426614174000').found,false);
 });
+test('passes an n8n extraction failure through the status response so the dashboard can stop waiting',()=>{
+  const id='123e4567-e89b-42d3-a456-426614174000';
+  const failed=normalizeSubmissionStatus({found:false,failed:true,submission_id:id,state:'failed',review_status:'Extraction Failed',validation_status:'Failed',items:[],message:'Gemini extraction failed: The service is currently unavailable.'},id);
+  assert.equal(failed.found,false);
+  assert.equal(failed.state,'failed');
+  assert.equal(failed.review_status,'Extraction Failed');
+  assert.equal(failed.message,'Gemini extraction failed: The service is currently unavailable.');
+  assert.deepEqual(failed.items,[]);
+});
 test('passes an explicit duplicate result from status through the safe response shape',()=>{
   assert.equal(normalizeSubmissionStatus({found:false,duplicate:true,state:'duplicate'},'123e4567-e89b-42d3-a456-426614174000').duplicate,true);
 });

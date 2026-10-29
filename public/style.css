@@ -527,6 +527,47 @@ input[type=checkbox] {
     margin-top: 0;
 }
 
+/* Per-file results for a multi-invoice upload */
+.batch-results {
+    display: grid;
+    gap: 8px;
+    margin: 14px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.batch-results li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+}
+
+.batch-results b {
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.batch-results small {
+    color: var(--text-2);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.batch-results button {
+    justify-self: end;
+}
+
+.batch-results .state {
+    justify-self: end;
+    white-space: nowrap;
+}
+
 /* Status indicator: tone is set from the label text by app.js */
 .state {
     flex: none;
