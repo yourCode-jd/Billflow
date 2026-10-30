@@ -105,7 +105,7 @@ export const STATUS_POLL_DELAYS_MS=[2000,3000,5000,10000,15000,15000,20000,20000
 // A failed extraction caused by a temporary Gemini/network problem is sent again automatically, at most twice.
 export const EXTRACTION_RETRY_DELAYS_MS=[30000,120000];
 export function isTransientExtractionFailure(message) {
-  return /\b(429|500|502|503|504)\b|overload|unavailable|try again|rate limit|quota|resource.?exhausted|timed? ?out|timeout|deadline|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|network|connection/i.test(String(message||''));
+  return /\b(429|500|502|503|504)\b|overload|unavailable|try again|rate.?limit|too many requests|quota|resource.?exhausted|timed? ?out|timeout|deadline|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|network|connection/i.test(String(message||''));
 }
 // Follows one invoice; when n8n reports a transient extraction failure, uploads the same file again
 // (a new submission ID each time) after a bounded backoff. Other outcomes are returned unchanged.
@@ -129,7 +129,7 @@ export async function followWithExtractionRetries({submissionId,follow,reupload,
 export function extractionFailureText(result) {
   const reason=result.status?.message||'Gemini could not extract this invoice.';
   const retried=result.retries?` after ${result.retries} automatic ${result.retries===1?'retry':'retries'}`:'';
-  return `${reason}${/[.!?]$/.test(reason)?'':'.'} Extraction failed${retried}; nothing was saved to Google Sheets.`;
+  return `${reason}${/[.!?]$/.test(reason)?'':'.'} Extraction failed${retried}; no invoice was saved.`;
 }
 export const UPLOAD_TYPES=['image/jpeg','image/png','image/webp','application/pdf'];
 export const MAX_UPLOAD_FILES=10;
@@ -200,7 +200,7 @@ export const CSV_FIELD_OPTIONS=[
   {key:'supplier',name:'Supplier'},{key:'invoice_number',name:'Invoice number'},{key:'date',name:'Date'},{key:'currency',name:'Currency'},
   {key:'description',name:'Item description'},{key:'quantity',name:'Item quantity'},{key:'unit_price',name:'Item unit price'},{key:'amount',name:'Item amount'},
   {key:'subtotal',name:'Subtotal'},{key:'discount',name:'Discount'},{key:'tax',name:'Tax / GST'},{key:'round_off',name:'Round-off'},{key:'total',name:'Total'},
-  {key:'line_number',name:'Line number'}
+  {key:'line_number',name:'Line number'},{key:'gstin',name:'GSTIN'},{key:'payment_mode',name:'Payment mode'}
 ];
 export const CSV_PRESETS_STORAGE_KEY='bill-ai:csv-presets';
 const DEFAULT_FIELD_COUNT=13;
@@ -309,7 +309,7 @@ function init() {
   let selected=[], sent=new Set(), rows=[], currentSubmissionId=null, history=[];
   let csvPresets=readCsvPresets();
   let csvMapping=csvPresets.activeId?csvMappingFromColumns(csvPresets.presets.find(preset=>preset.id===csvPresets.activeId).columns):defaultCsvMapping();
-  const fields=['supplier','invoice_number','date','currency','subtotal','discount','tax','round_off','total'];
+  const fields=['supplier','invoice_number','date','gstin','payment_mode','currency','subtotal','discount','tax','round_off','total'];
   const msg=(id,text)=>{$(id).textContent=text};
   const toneState=()=>{$('state').dataset.tone=stateTone($('state').textContent)};
   new MutationObserver(toneState).observe($('state'),{childList:true,characterData:true,subtree:true});
@@ -402,7 +402,7 @@ function init() {
       setEmpty(extractionFailureText(result));
       $('recovery').hidden=false;
       $('recovery-id').value=submissionId;
-      msg('recovery-message','Nothing was saved for this submission. Upload the invoice again to retry.');
+      msg('recovery-message','No invoice was saved for this submission. Upload the invoice again to retry.');
       return;
     }
     if (result.kind==='error') {
@@ -432,7 +432,7 @@ function init() {
       reupload:()=>{msg('message','Sending the invoice again…');return uploadInvoiceFile(file)},
       onRetry:({retry,total,delayMs,reason})=>{
         $('state').textContent='Retrying';
-        setEmpty(`Gemini was temporarily unavailable (${reason}). Sending the invoice again in ${formatWait(delayMs)} (retry ${retry} of ${total}). Nothing was saved for the failed attempt.`);
+        setEmpty(`Gemini was temporarily unavailable (${reason}). Sending the invoice again in ${formatWait(delayMs)} (retry ${retry} of ${total}). No invoice was saved for the failed attempt.`);
       }});
     submissionId=result.submissionId||submissionId;
     if (!current()||result.kind==='cancelled') return;
@@ -504,7 +504,7 @@ function init() {
     }
     if (result.kind==='failed'||result.kind==='upload-failed') {
       row.set('Extraction failed',result.kind==='failed'?`${extractionFailureText(result)} · ID ${submissionId}`:`Automatic retry could not be sent: ${result.error}`);
-      // Manual retry re-sends only this file; nothing was saved for the failed submission.
+      // Manual retry re-sends only this file; no invoice was saved for the failed submission.
       row.action.textContent='Retry';row.action.hidden=false;
       row.action.onclick=async()=>{
         row.action.hidden=true;row.set('Uploading');
@@ -523,6 +523,8 @@ function init() {
   const extractBatch=async files=>{
     $('extract').disabled=true;
     msg('message',`Sending ${files.length} invoices one at a time…`);
+    // Rows from an earlier batch are removed; their submissions are still checked and recorded in history.
+    $('batch-results').replaceChildren();
     const rowsByIndex=files.map(file=>{const row=batchRow(file);row.set('Waiting');return row});
     try {
       const results=await uploadInvoiceBatch({files,sent,upload:file=>{rowsByIndex[files.indexOf(file)].set('Uploading');return uploadInvoiceFile(file)},onResult:(result,index)=>{

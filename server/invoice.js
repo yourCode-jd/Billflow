@@ -88,7 +88,9 @@ const CSV_FIELD_VALUES={
   tax:inv=>inv.tax,
   round_off:inv=>inv.round_off,
   total:inv=>inv.total,
-  line_number:(inv,item,index)=>inv.items.length?index+1:''
+  line_number:(inv,item,index)=>inv.items.length?index+1:'',
+  gstin:inv=>inv.gstin,
+  payment_mode:inv=>inv.payment_mode
 };
 export const CSV_FIELDS=Object.keys(CSV_FIELD_VALUES);
 export const DEFAULT_CSV_COLUMNS=CSV_FIELDS.slice(0,13).map(key=>({key,label:key}));

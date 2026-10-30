@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {calculateInvoiceAmounts,normalizeInvoiceNumber,validateInvoice,safeCsv} from './invoice.js';
-import {applyLocalEnvironment,classifyGeminiFailure,classifyN8nFailure,createServer,getN8nInvoiceWebhookUrl,getN8nSubmissionStatusWebhookUrl,hasJsonContentType,isDuplicateSubmissionResult,isExpectedFile,isSameOrigin,isSubmissionId,normalize,normalizeN8nUploadResult,normalizeSubmissionStatus,requestGemini,requestSubmissionStatus,submitInvoiceToN8n} from './index.js';
+import {applyLocalEnvironment,classifyN8nFailure,createServer,getN8nInvoiceWebhookUrl,getN8nSubmissionStatusWebhookUrl,hasJsonContentType,isDuplicateSubmissionResult,isExpectedFile,isSameOrigin,isSubmissionId,normalize,normalizeN8nUploadResult,normalizeSubmissionStatus,requestSubmissionStatus,submitInvoiceToN8n} from './index.js';
 test('warns when arithmetic mismatches',()=>{assert.ok(validateInvoice({supplier:'X',invoice_number:'1',date:'2026-10-21',subtotal:100,tax:5,total:200,items:[{description:'A',quantity:2,unit_price:20,amount:30}]}).length>=2)});
 test('rejects non-empty invalid numeric fields but preserves missing values',()=>{
   const invalid=validateInvoice({supplier:'X',invoice_number:'1',date:'2026-10-21',subtotal:'five hundred',tax:'$41x',total:null,items:[{description:'A',quantity:'many',unit_price:'unknown',amount:125}]});
@@ -122,6 +122,12 @@ test('does not invent optional EcoMart fields or a default currency',()=>{
   assert.equal(invoice.items[0].gst_percent,undefined);
   assert.equal(invoice.items.length,1);
 });
+test('keeps GSTIN and payment mode as text and defaults them to empty',()=>{
+  const invoice=normalize({supplier:'A',gstin:'06AABCH345601Z5',payment_mode:'UPI',items:[]});
+  assert.deepEqual([invoice.gstin,invoice.payment_mode],['06AABCH345601Z5','UPI']);
+  assert.deepEqual([normalize({}).gstin,normalize({}).payment_mode],['','']);
+  assert.match(safeCsv({...invoice,items:[]},[{key:'gstin',label:'GSTIN'},{key:'payment_mode',label:'Payment mode'}]),/^"GSTIN","Payment mode"\r\n"06AABCH345601Z5","UPI"\r\n$/);
+});
 test('CSV escapes formula-like content',()=>{const csv=safeCsv({supplier:'=CMD()',invoice_number:'1',date:'',currency:'INR',items:[{description:'+evil',quantity:1,unit_price:10,amount:10}],subtotal:10,tax:0,total:10});assert.match(csv,/"'=CMD\(\)"/);assert.match(csv,/"'\+evil"/)});
 test('recognizes the declared upload file signatures',()=>{
   assert.ok(isExpectedFile('image/png',Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])));
@@ -137,29 +143,6 @@ test('requires same-origin JSON API requests',()=>{
 test('preserves line items when Gemini uses its common alternative key',()=>{
   const invoice=normalize({line_items:[{description:'Paper',quantity:2,unit_price:25,amount:50}]});
   assert.deepEqual(invoice.items,[{description:'Paper',quantity:2,unit_price:25,amount:50}]);
-});
-test('classifies model access and quota failures without returning provider body',()=>{
-  assert.equal(classifyGeminiFailure(404,'{"error":{"status":"NOT_FOUND","message":"internal"}}','old-model').code,'GEMINI_MODEL_UNAVAILABLE');
-  assert.equal(classifyGeminiFailure(403,'{}','model').code,'GEMINI_ACCESS_DENIED');
-  assert.equal(classifyGeminiFailure(429,'{}','model').code,'GEMINI_QUOTA_EXCEEDED');
-});
-test('retries one transient Gemini service failure with a mock transport',async()=>{
-  let calls=0;
-  const response=await requestGemini({endpoint:'https://mock.invalid/generate',apiKey:'',payload:{},retryDelayMs:0,sleep:async()=>{},fetchImpl:async()=>{
-    calls++;
-    return calls===1 ? new Response('',{status:503}) : new Response('{"candidates":[]}',{status:200});
-  }});
-  assert.equal(calls,2);
-  assert.equal(response.status,200);
-});
-test('does not retry a quota response from a mock transport',async()=>{
-  let calls=0;
-  const response=await requestGemini({endpoint:'https://mock.invalid/generate',apiKey:'',payload:{},retryDelayMs:0,sleep:async()=>{},fetchImpl:async()=>{
-    calls++;
-    return new Response('{"error":{"status":"RESOURCE_EXHAUSTED"}}',{status:429});
-  }});
-  assert.equal(calls,1);
-  assert.equal(response.status,429);
 });
 test('forwards the validated upload to n8n as multipart Invoice and submission ID without exposing the secret',async()=>{
   let request;
@@ -460,4 +443,13 @@ test('custom CSV headers and values keep formula-injection escaping',async()=>{
 test('rejects invalid CSV column mappings',async()=>{
   const {csvColumns}=await import('./invoice.js');
   for (const bad of [[],'supplier',[{key:'secret',label:'x'}],[{key:'supplier',label:''}],[{key:'supplier',label:'a'},{key:'supplier',label:'b'}],[{key:'__proto__',label:'x'}],[{key:'supplier',label:'x'.repeat(101)}],[null]]) assert.equal(csvColumns(bad),null,JSON.stringify(bad));
+});
+test('serves pages when the URL has a query string and still only serves the listed files',async t=>{
+  const server=createServer();
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve)});
+  const base=`http://127.0.0.1:${server.address().port}`;
+  const status=path=>new Promise((resolve,reject)=>http.get(base+path,response=>{response.resume();resolve(response.statusCode)}).on('error',reject));
+  for (const path of ['/','/?ref=share','/index.html?x=1','/app.js?v=2','/favicon.ico?x']) assert.equal(await status(path),200,path);
+  for (const path of ['/.env','/../.env','/%2e%2e/.env','/server/index.js?x','/missing?/app.js']) assert.equal(await status(path),404,path);
 });

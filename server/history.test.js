@@ -227,3 +227,34 @@ test('an unreadable history file does not block forwarding an approved invoice t
   assert.equal(forwarded.invoice.items.length,2);
   assert.equal(await readFile(file,'utf8'),'{corrupt');
 });
+test('GSTIN and payment mode survive status lookup, approval edits and CSV export',async t=>{
+  const status={found:true,submission_id:idA,state:'saved',supplier_name:'Horizon Software Solutions',invoice_number:'HS-2026-9905',date:'25 Oct 2026',gstin:'06AABCH345601Z5',payment_mode:'Bank transfer',currency:'₹',subtotal:25000,discount:0,gst_total:4500,round_off:0,grand_total:29500,review_status:'Pending Review',items:[{description:'Software',qty:1,rate:25000,amount:25000,gst_percent:18}]};
+  const originalFetch=globalThis.fetch;
+  const originalWebhook=process.env.N8N_WEBHOOK_URL;
+  const originalSecret=process.env.BILL_AI_WEBHOOK_SECRET;
+  process.env.N8N_WEBHOOK_URL='https://jastpss.app.n8n.cloud/webhook/dashboard-invoice-upload';
+  process.env.BILL_AI_WEBHOOK_SECRET='test-only-secret';
+  globalThis.fetch=async(url,options)=>String(url).includes('n8n.cloud')?new Response(JSON.stringify(status)):originalFetch(url,options);
+  t.after(()=>{
+    globalThis.fetch=originalFetch;
+    if(originalWebhook===undefined) delete process.env.N8N_WEBHOOK_URL; else process.env.N8N_WEBHOOK_URL=originalWebhook;
+    if(originalSecret===undefined) delete process.env.BILL_AI_WEBHOOK_SECRET; else process.env.BILL_AI_WEBHOOK_SECRET=originalSecret;
+  });
+  const store=createHistoryStore();
+  const base=await startServer(t,store);
+  const restored=await (await fetch(`${base}/api/submissions/${idA}/status`)).json();
+  assert.deepEqual([restored.gstin,restored.payment_mode],['06AABCH345601Z5','Bank transfer']);
+  let [record]=await store.list();
+  assert.deepEqual([record.source,record.invoice.gstin,record.invoice.payment_mode],['n8n','06AABCH345601Z5','Bank transfer']);
+  // The reviewer corrects both fields before approving; the approved version keeps the edits.
+  const approved={supplier:'Horizon Software Solutions',invoice_number:'HS-2026-9905',date:'25 Oct 2026',gstin:'06AABCH3456O1Z5',payment_mode:'UPI',currency:'₹',subtotal:25000,discount:0,tax:4500,round_off:0,total:29500,items:[{description:'Software',quantity:1,unit_price:25000,amount:25000,gst_percent:0.18}]};
+  assert.equal((await (await postJson(`${base}/api/save`,{invoice:approved,confirmedWarnings:true,submission_id:idA})).json()).history_saved,true);
+  [record]=await store.list();
+  assert.deepEqual([record.source,record.invoice.gstin,record.invoice.payment_mode],['approved','06AABCH3456O1Z5','UPI']);
+  const columns=[{key:'invoice_number',label:'Bill'},{key:'gstin',label:'GSTIN'},{key:'payment_mode',label:'Payment'}];
+  const csv=async(path,body)=>Buffer.from(await (await postJson(base+path,body)).arrayBuffer()).toString('utf8').replace(/^﻿/,'').trim().split('\r\n');
+  assert.deepEqual(await csv('/api/invoices/csv',{ids:[idA],columns}),['"Bill","GSTIN","Payment"','"HS-2026-9905","06AABCH3456O1Z5","UPI"']);
+  assert.deepEqual(await csv('/api/csv',{invoice:approved,columns}),['"Bill","GSTIN","Payment"','"HS-2026-9905","06AABCH3456O1Z5","UPI"']);
+  // The default CSV format is unchanged.
+  assert.equal((await csv('/api/csv',{invoice:approved}))[0],'"supplier","invoice_number","date","currency","description","quantity","unit_price","amount","subtotal","discount","tax","round_off","total"');
+});

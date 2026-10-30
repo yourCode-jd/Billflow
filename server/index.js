@@ -84,6 +84,7 @@ export function normalize(result) {
   const normalized={
     supplier: String(inv.supplier ?? ''), invoice_number: String(inv.invoice_number ?? ''),
     date: String(inv.date ?? ''), currency: String(inv.currency ?? ''),
+    gstin: String(inv.gstin ?? ''), payment_mode: String(inv.payment_mode ?? ''),
     subtotal: normalizeInvoiceNumber(inv.subtotal ?? null),
     discount: normalizeInvoiceNumber(inv.discount ?? null),
     tax: normalizeInvoiceNumber(inv.tax ?? inv.gst_total ?? null),
@@ -100,49 +101,6 @@ export function normalize(result) {
     if (inv[key]!==undefined) normalized[key]=normalizeInvoiceNumber(inv[key]);
   }
   return normalized;
-}
-export function classifyGeminiFailure(httpStatus, raw, model) {
-  let provider = {};
-  try { provider = JSON.parse(raw)?.error || {}; } catch {}
-  const metadata = {
-    code: 'GEMINI_REQUEST_FAILED',
-    provider_status: typeof provider.status === 'string' ? provider.status : 'UNKNOWN'
-  };
-  if (httpStatus === 404 || provider.status === 'NOT_FOUND') {
-    return {...metadata, code:'GEMINI_MODEL_UNAVAILABLE', error:`Gemini model "${model}" is unavailable to this API key. Choose a currently available multimodal model.`};
-  }
-  if (httpStatus === 401) {
-    return {...metadata, code:'GEMINI_AUTH_FAILED', error:'Gemini rejected the API key. Check that the key is valid and enabled.'};
-  }
-  if (httpStatus === 403) {
-    return {...metadata, code:'GEMINI_ACCESS_DENIED', error:'This Gemini API key or project is not permitted to use the requested model.'};
-  }
-  if (httpStatus === 429) {
-    return {...metadata, code:'GEMINI_QUOTA_EXCEEDED', error:'Gemini quota or rate limit was exceeded. Wait and retry, or review the project quota and billing tier.'};
-  }
-  if (httpStatus >= 500) {
-    return {...metadata, code:'GEMINI_SERVICE_UNAVAILABLE', error:'Gemini is temporarily unavailable. Retry shortly.'};
-  }
-  return {...metadata, code:'GEMINI_REQUEST_REJECTED', error:'Gemini rejected this extraction request. Check the file and model configuration.'};
-}
-const transientGeminiStatuses = new Set([408,500,502,503,504]);
-const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-export async function requestGemini({endpoint,apiKey,payload,fetchImpl=fetch,maxAttempts=2,retryDelayMs=300,sleep=wait}) {
-  for (let attempt=1; attempt<=maxAttempts; attempt++) {
-    try {
-      const response=await fetchImpl(endpoint,{method:'POST',signal:AbortSignal.timeout(45000),headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},body:JSON.stringify(payload)});
-      if (!transientGeminiStatuses.has(response.status) || attempt===maxAttempts) return response;
-      try { await response.body?.cancel(); } catch {}
-    } catch (error) {
-      // Do not retry a timeout: the upstream request may still be processing and a retry would add delay/cost.
-      if (attempt===maxAttempts || error?.name==='AbortError' || error?.name==='TimeoutError') throw error;
-    }
-    await sleep(retryDelayMs*attempt);
-  }
-}
-function logGeminiFailure(metadata) {
-  // Deliberately exclude request bodies, provider messages, headers, and credentials.
-  console.warn('Gemini extraction failed', metadata);
 }
 function safeFilename(value) {
   const filename=String(value ?? 'invoice').replace(/[^a-zA-Z0-9._-]/g,'_').slice(0,120);
@@ -398,7 +356,9 @@ export function createServer({history=createHistoryStore()}={}) {
     }
     if(req.method!=='GET') return reply(res,405,{error:'Method not allowed'});
     // Browsers request /favicon.ico by default; serve the same local SVG icon.
-    const page = req.url==='/' ? '/index.html' : req.url==='/favicon.ico' ? '/favicon.svg' : req.url;
+    // Match the path only, so a query string (e.g. a shared link with ?ref=) still serves the page.
+    const path=requestUrl.pathname;
+    const page = path==='/' ? '/index.html' : path==='/favicon.ico' ? '/favicon.svg' : path;
     if (!['/index.html','/app.js','/style.css','/recovery.css','/favicon.svg'].includes(page)) return reply(res,404,{error:'Not found'});
     const buffer=await readFile(resolve(root,'public',page.slice(1)));
     res.writeHead(200,{'Content-Type':mime[extname(page)],...securityHeaders}); res.end(buffer);

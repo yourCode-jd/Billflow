@@ -272,8 +272,6 @@ main {
     flex: 1;
     min-width: 0;
     width: 100%;
-    max-width: 1040px;
-    margin: 0 auto;
     padding: 56px 40px 32px;
 }
 

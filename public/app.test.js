@@ -183,7 +183,7 @@ test('maps, reorders and renames CSV columns',()=>{
   assert.equal(columns.some(column=>column.key==='date'),false);
   const restored=csvMappingFromColumns(columns);
   assert.deepEqual(csvColumnsFromMapping(restored),columns);
-  assert.deepEqual(restored.filter(column=>!column.include).map(column=>column.key).sort(),['date','line_number']);
+  assert.deepEqual(restored.filter(column=>!column.include).map(column=>column.key).sort(),['date','gstin','line_number','payment_mode']);
   assert.equal(sameCsvColumns(columns,csvColumnsFromMapping(restored)),true);
   assert.equal(sameCsvColumns(columns,DEFAULT_CSV_COLUMNS),false);
 });
@@ -373,6 +373,26 @@ test('classifies transient Gemini and connection errors',()=>{
   for (const message of ['Gemini extraction failed: [400 Bad Request] Unsupported MIME type','API key not valid. Please pass a valid API key.','',undefined])
     assert.equal(isTransientExtractionFailure(message),false,String(message));
 });
+test('rate-limit (429) failures are retried like 503 and connection failures; permanent errors are not',()=>{
+  // Messages as n8n records them in review_notes for the Gemini node.
+  for (const message of ['Gemini extraction failed: The service is receiving too many requests from you','Gemini extraction failed: Too Many Requests','Gemini extraction failed: [429] RESOURCE_EXHAUSTED','Gemini extraction failed: Rate-limit exceeded','Gemini extraction failed: Service unavailable - try again later or consider setting this node to retry automatically (in the node settings)','Gemini extraction failed: The connection was aborted, perhaps the server is offline'])
+    assert.equal(isTransientExtractionFailure(message),true,message);
+  for (const message of ['Gemini extraction failed: Bad request - please check your parameters','Gemini extraction failed: Forbidden - perhaps check your credentials?','Invoice has no extracted items'])
+    assert.equal(isTransientExtractionFailure(message),false,message);
+});
+test('a 429 extraction failure is sent again at most twice with the existing delays',async()=>{
+  let uploads=0;const waits=[];
+  const result=await followWithExtractionRetries({submissionId:'first',follow:async id=>({kind:'failed',submissionId:id,status:failedStatus('Gemini extraction failed: The service is receiving too many requests from you')}),reupload:async()=>({submission_id:`retry-${++uploads}`}),sleep:async ms=>{waits.push(ms)}});
+  assert.equal(result.kind,'failed');
+  assert.equal(result.submissionId,'retry-2');
+  assert.equal(uploads,2);
+  assert.deepEqual(waits,[30000,120000]);
+});
+test('a retry that n8n reports as duplicate stops without another upload',async()=>{
+  let uploads=0;
+  const result=await followWithExtractionRetries({submissionId:'first',follow:async id=>({kind:'failed',submissionId:id,status:failedStatus('Gemini extraction failed: Too Many Requests')}),reupload:async()=>{uploads++;return {submission_id:'retry-1',duplicate:true}},sleep:async()=>{}});
+  assert.deepEqual([result.kind,result.submissionId,result.uploadDuplicate,uploads],['duplicate','retry-1',true,1]);
+});
 const sequence=(...steps)=>{let i=0;return async()=>{const step=steps[Math.min(i++,steps.length-1)];if(step instanceof Error)throw step;return step}};
 test('a transient extraction failure is sent again after a backoff, with a new submission ID',async()=>{
   const followed=[];const waits=[];const retries=[];
@@ -395,7 +415,7 @@ test('extraction retries are bounded and report the failure',async()=>{
   assert.equal(uploads,2);
   assert.deepEqual(waits,EXTRACTION_RETRY_DELAYS_MS);
   assert.equal(EXTRACTION_RETRY_DELAYS_MS.reduce((a,b)=>a+b,0),150000);
-  assert.match(extractionFailureText(result),/Extraction failed after 2 automatic retries; nothing was saved to Google Sheets\.$/);
+  assert.match(extractionFailureText(result),/Extraction failed after 2 automatic retries; no invoice was saved\.$/);
 });
 test('a permanent extraction failure is not retried automatically',async()=>{
   let uploads=0;
