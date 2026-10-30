@@ -38,13 +38,28 @@ export function restoredInvoiceFields(status) {
 }
 export function restoredInvoiceItems(items) {
   if (!Array.isArray(items)) return [];
+  // Numeric inputs cannot hold text, so unreadable values become '' here and are listed by unreadableStatusValues.
   return items.map(item=>({
     description:item.description??'',
-    quantity:item.quantity??'',
-    unit_price:item.unit_price??'',
-    amount:item.amount??'',
+    quantity:parseInvoiceNumber(item.quantity),
+    unit_price:parseInvoiceNumber(item.unit_price),
+    amount:parseInvoiceNumber(item.amount),
     gst_percent:displayGstPercent(item.gst_percent)
   }));
+}
+// Non-empty amounts in a status response that cannot be shown as numbers, with their original text.
+export function unreadableStatusValues(status) {
+  const unreadable=(label,value)=>value!==null&&value!==undefined&&String(value).trim()!==''&&parseInvoiceNumber(value)===''?[`${label} "${String(value).trim().slice(0,60)}"`]:[];
+  const totals=[['Subtotal',status?.subtotal],['Discount',status?.discount],['Tax / GST',status?.gst_total??status?.tax],['Round-off',status?.round_off],['Total',status?.grand_total??status?.total]];
+  const items=Array.isArray(status?.items)?status.items:[];
+  return [
+    ...totals.flatMap(([label,value])=>unreadable(label,value)),
+    ...items.flatMap((item,i)=>[['quantity',item?.quantity],['rate',item?.unit_price],['amount',item?.amount],['GST %',item?.gst_percent]].flatMap(([label,value])=>unreadable(`Item ${i+1} ${label}`,value)))
+  ];
+}
+export function manualReviewNotice(status) {
+  const values=unreadableStatusValues(status);
+  return values.length?`Could not read ${values.length===1?'this value':'these values'}; enter ${values.length===1?'it':'them'} manually from the bill: ${values.join('; ')}.`:'';
 }
 export function isSubmissionId(value) {
   return typeof value==='string' && /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(value);
@@ -369,7 +384,8 @@ function init() {
     $('review').hidden=false;
     $('empty').hidden=true;
     $('duplicate-warning').hidden=true;
-    const notes=statusWarningText(status);
+    const warning=statusWarningText(status), notice=manualReviewNotice(status);
+    const notes=warning&&notice?`${warning}${/[.!?]$/.test(warning)?'':'.'} ${notice}`:warning||notice;
     $('warnings').textContent=notes;
     $('warnings').hidden=!notes;
   };

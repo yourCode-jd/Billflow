@@ -3,7 +3,8 @@ export function normalizeInvoiceNumber(value) {
   if (typeof value!=='string'||value.trim()==='') return value;
   const text=value.trim();
   const parenthesized=text.startsWith('(')&&text.endsWith(')');
-  const numericText=parenthesized?text.slice(1,-1).trim():text;
+  // Indian rupee notation on bills: "21,980/-" (rupees only), "6935/-00" and "32345=00" (zero paise).
+  const numericText=(parenthesized?text.slice(1,-1).trim():text).replace(/(\d)(?:\/-(?:00)?|=00)$/,'$1');
   const match=numericText.match(/^([+-]?)\s*([$€£₹¥])?\s*((?:\d{1,3}(?:,\d{3})+|\d{1,2}(?:,\d{2})*,\d{3}|\d+)(?:\.\d+)?)\s*(hrs?)?$/i);
   if (!match||(parenthesized&&match[1])) return value;
   const amount=Number(match[3].replaceAll(',',''));

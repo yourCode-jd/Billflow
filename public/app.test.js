@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {CSV_FIELDS,DEFAULT_CSV_COLUMNS} from '../server/invoice.js';
-import {EXTRACTION_RETRY_DELAYS_MS,extractionFailureText,followWithExtractionRetries,isTransientExtractionFailure,invoiceFileKey,MAX_UPLOAD_FILES,selectInvoiceFiles,uploadInvoiceBatch,formatWait,pollSubmissionStatus,STATUS_POLL_DELAYS_MS,STATUS_POLL_MAX_WAIT_MS,addCsvPreset,CSV_FIELD_OPTIONS,CSV_PRESETS_STORAGE_KEY,csvColumnsFromMapping,csvMappingFromColumns,defaultCsvMapping,deleteCsvPreset,moveCsvColumn,parseCsv,readCsvPresets,renameCsvPreset,sameCsvColumns,updateCsvPreset,writeCsvPresets,displayGstPercent,historyCsvFilename,historyExportBody,historyTotalText,stateTone,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,statusWarningText,submissionResultKind} from './app.js';
+import {EXTRACTION_RETRY_DELAYS_MS,extractionFailureText,followWithExtractionRetries,isTransientExtractionFailure,invoiceFileKey,MAX_UPLOAD_FILES,selectInvoiceFiles,uploadInvoiceBatch,formatWait,pollSubmissionStatus,STATUS_POLL_DELAYS_MS,STATUS_POLL_MAX_WAIT_MS,addCsvPreset,CSV_FIELD_OPTIONS,CSV_PRESETS_STORAGE_KEY,csvColumnsFromMapping,csvMappingFromColumns,defaultCsvMapping,deleteCsvPreset,moveCsvColumn,parseCsv,readCsvPresets,renameCsvPreset,sameCsvColumns,updateCsvPreset,writeCsvPresets,displayGstPercent,historyCsvFilename,historyExportBody,historyTotalText,stateTone,DUPLICATE_SUBMISSION_MESSAGE,gstRateForStorage,LAST_DUPLICATE_SUBMISSION_STORAGE_KEY,LAST_SUBMISSION_STORAGE_KEY,parseInvoiceNumber,readLastSubmissionId,rememberDuplicateSubmissionId,rememberSubmissionId,restoreSubmissionState,restoredInvoiceFields,restoredInvoiceItems,statusWarningText,submissionResultKind,unreadableStatusValues,manualReviewNotice} from './app.js';
 
 const storage=initial=>{const values=new Map(Object.entries(initial||{}));return {getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)}};
 
@@ -145,6 +145,21 @@ test('restores GST percentage values into the line-item GST input mapping',()=>{
     {description:'Paper',quantity:2,unit_price:50,amount:100,gst_percent:18},
     {description:'Ink',quantity:'',unit_price:'',amount:'',gst_percent:12}
   ]);
+});
+test('restored item quantity, rate and amount are numbers, and unreadable values become empty inputs',()=>{
+  assert.deepEqual(restoredInvoiceItems([{description:'Paper',quantity:'2',unit_price:'50.5',amount:'101',gst_percent:''},{description:'Stamp',quantity:'',unit_price:'21,980/-',amount:null,gst_percent:''}]),[
+    {description:'Paper',quantity:2,unit_price:50.5,amount:101,gst_percent:''},
+    {description:'Stamp',quantity:'',unit_price:'',amount:'',gst_percent:''}
+  ]);
+});
+test('lists unreadable restored amounts with their original text for manual review',()=>{
+  const status={subtotal:'6935/-00',discount:'',gst_total:null,round_off:0,grand_total:'32345=00',items:[{description:'Stamp',quantity:'',unit_price:'21,980/-',amount:'',gst_percent:''},{description:'Service',quantity:1,unit_price:6935,amount:'6935 (approx)',gst_percent:'eighteen'}]};
+  assert.deepEqual(unreadableStatusValues(status),['Subtotal "6935/-00"','Total "32345=00"','Item 1 rate "21,980/-"','Item 2 amount "6935 (approx)"','Item 2 GST % "eighteen"']);
+  assert.equal(manualReviewNotice({subtotal:'6935/-00',items:[]}),'Could not read this value; enter it manually from the bill: Subtotal "6935/-00".');
+  assert.match(manualReviewNotice(status),/^Could not read these values; enter them manually from the bill: Subtotal "6935\/-00"; .*Item 2 GST % "eighteen"\.$/);
+  // Values the server already normalized to numbers (the usual case) produce no notice.
+  assert.equal(manualReviewNotice({subtotal:6935,discount:'',gst_total:'',round_off:'',grand_total:32345,items:[{description:'Stamp',quantity:'',unit_price:21980,amount:'',gst_percent:''}]}),'');
+  assert.equal(manualReviewNotice({}),'');
 });
 test('builds history CSV export requests for all, selected, and one invoice',()=>{
   const id='123e4567-e89b-42d3-a456-426614174000';

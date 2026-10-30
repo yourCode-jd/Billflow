@@ -156,6 +156,8 @@ export function normalizeN8nUploadResult(payload,submissionId) {
   return result;
 }
 function statusField(value,limit=200) {
+  // Google Sheets returns digit-only cells (e.g. invoice number "4") as numbers; keep them as text.
+  if (typeof value==='number') return Number.isFinite(value) ? String(value).slice(0,limit) : '';
   return typeof value==='string' ? value.slice(0,limit) : '';
 }
 function invoiceValue(value,limit=200) {

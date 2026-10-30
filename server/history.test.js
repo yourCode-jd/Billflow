@@ -258,3 +258,31 @@ test('GSTIN and payment mode survive status lookup, approval edits and CSV expor
   // The default CSV format is unchanged.
   assert.equal((await csv('/api/csv',{invoice:approved}))[0],'"supplier","invoice_number","date","currency","description","quantity","unit_price","amount","subtotal","discount","tax","round_off","total"');
 });
+test('a status lookup records the invoice number and rupee-notation amounts in history',async t=>{
+  const id='02945aa9-9b1c-40a2-8843-f4d2e37bf3d4';
+  const status={found:true,submission_id:id,state:'saved',supplier_name:'BHARAT ASSOCIATES',invoice_number:4,date:'15/01/2024',gstin:'09GBVPS8212J1ZP',payment_mode:'',currency:'',subtotal:'6935/-00',discount:'',gst_total:'',round_off:'',grand_total:'32345=00',review_status:'Needs Review',validation_status:'Flagged',items:[{description:'STAMP PAPER VALUE',qty:'',rate:'21,980/-',amount:'',gst_percent:''},{description:'Notary Charges',qty:'',rate:'2180/-00',amount:'',gst_percent:''},{description:'SERVICE CHARGES',qty:'',rate:'6935/-',amount:'6935/-00',gst_percent:''}]};
+  const originalFetch=globalThis.fetch;
+  const originalWebhook=process.env.N8N_WEBHOOK_URL;
+  const originalSecret=process.env.BILL_AI_WEBHOOK_SECRET;
+  process.env.N8N_WEBHOOK_URL='https://jastpss.app.n8n.cloud/webhook/dashboard-invoice-upload';
+  process.env.BILL_AI_WEBHOOK_SECRET='test-only-secret';
+  globalThis.fetch=async(url,options)=>String(url).includes('n8n.cloud')?new Response(JSON.stringify(status)):originalFetch(url,options);
+  t.after(()=>{
+    globalThis.fetch=originalFetch;
+    if(originalWebhook===undefined) delete process.env.N8N_WEBHOOK_URL; else process.env.N8N_WEBHOOK_URL=originalWebhook;
+    if(originalSecret===undefined) delete process.env.BILL_AI_WEBHOOK_SECRET; else process.env.BILL_AI_WEBHOOK_SECRET=originalSecret;
+  });
+  // An earlier lookup (before the fix) stored the blank invoice number and unparsed text; the next lookup corrects it.
+  const store=createHistoryStore();
+  await store.upsert({submissionId:id,source:'n8n',invoice:{supplier:'BHARAT ASSOCIATES',invoice_number:'',date:'15/01/2024',currency:'',subtotal:'6935/-00',discount:null,tax:null,total:'32345=00',items:[]}});
+  const base=await startServer(t,store);
+  await fetch(`${base}/api/submissions/${id}/status`);
+  const [record]=await store.list();
+  assert.deepEqual([record.source,record.invoice.invoice_number,record.invoice.gstin,record.invoice.subtotal,record.invoice.total],['n8n','4','09GBVPS8212J1ZP',6935,32345]);
+  assert.deepEqual(record.invoice.items.map(item=>[item.unit_price,item.amount]),[[21980,''],[2180,''],[6935,6935]]);
+  // An approved record is still never replaced by a status lookup.
+  await store.upsert({submissionId:id,source:'approved',invoice:{...record.invoice,invoice_number:'BA-4'}});
+  await fetch(`${base}/api/submissions/${id}/status`);
+  const [approved]=await store.list();
+  assert.deepEqual([approved.source,approved.invoice.invoice_number],['approved','BA-4']);
+});

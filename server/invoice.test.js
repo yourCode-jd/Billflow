@@ -453,3 +453,35 @@ test('serves pages when the URL has a query string and still only serves the lis
   for (const path of ['/','/?ref=share','/index.html?x=1','/app.js?v=2','/favicon.ico?x']) assert.equal(await status(path),200,path);
   for (const path of ['/.env','/../.env','/%2e%2e/.env','/server/index.js?x','/missing?/app.js']) assert.equal(await status(path),404,path);
 });
+// Submission 02945aa9-…: the live n8n status response (execution 596) for a bill written in Indian rupee notation.
+const rupeeStatus={found:true,submission_id:'02945aa9-9b1c-40a2-8843-f4d2e37bf3d4',state:'saved',supplier_name:'BHARAT ASSOCIATES',invoice_number:4,date:'15/01/2024',gstin:'09GBVPS8212J1ZP',payment_mode:'',currency:'',subtotal:'6935/-00',discount:'',gst_total:'',round_off:'',grand_total:'32345=00',review_status:'Needs Review',validation_status:'Flagged',validation_notes:'Subtotal is invalid; GST total is missing; Grand total is invalid; Item 1 quantity is missing; Item 1 rate is invalid; Item 1 amount is missing; Item 2 quantity is missing; Item 2 rate is invalid; Item 2 amount is missing; Item 3 quantity is missing; Item 3 rate is invalid; Item 3 amount is invalid',calculated_subtotal:0,calculated_gst_exclusive:0,items:[{description:'STAMP PAPER VALUE',qty:'',rate:'21,980/-',amount:'',gst_percent:''},{description:'Notary Charges',qty:'',rate:'2180/-00',amount:'',gst_percent:''},{description:'SERVICE CHARGES',qty:'',rate:'6935/-',amount:'6935/-00',gst_percent:''}],message:'Invoice data found'};
+test('parses only the confirmed Indian rupee notations',()=>{
+  for (const [text,value] of [['6935/-',6935],['21,980/-',21980],['6935/-00',6935],['2180/-00',2180],['32345=00',32345],['₹ 21,980/-',21980],['(6935/-)',-6935],['1,11,500/-',111500]]) assert.equal(normalizeInvoiceNumber(text),value,text);
+  for (const text of ['6935/-5','6935/-50','32345=5','32345=50','=00','/-','6935/','6935-','6935 /-','=SUM(A1)','12,34/-','6935/-00/-','35 hours of labor','2024/01/15']) assert.equal(normalizeInvoiceNumber(text),text,text);
+});
+test('status text fields keep numbers from Google Sheets as text and drop other non-text values',()=>{
+  const id='02945aa9-9b1c-40a2-8843-f4d2e37bf3d4';
+  const status=normalizeSubmissionStatus({found:true,invoice_number:4,supplier_name:1049,date:45306.5,payment_mode:null,gstin:{},currency:Infinity,review_status:Number.NaN,items:[{description:12,qty:1,rate:2,amount:2}]},id);
+  assert.deepEqual([status.invoice_number,status.supplier_name,status.date,status.payment_mode,status.gstin,status.currency,status.review_status,status.items[0].description],['4','1049','45306.5','','','','','12']);
+});
+test('restores the rupee-notation invoice with its invoice number and amounts',()=>{
+  const status=normalizeSubmissionStatus(rupeeStatus,rupeeStatus.submission_id);
+  assert.equal(status.invoice_number,'4');
+  assert.deepEqual([status.supplier_name,status.date,status.gstin],['BHARAT ASSOCIATES','15/01/2024','09GBVPS8212J1ZP']);
+  assert.deepEqual([status.subtotal,status.grand_total,status.total],[6935,32345,32345]);
+  assert.deepEqual(status.items.map(item=>[item.description,item.quantity,item.unit_price,item.amount]),[['STAMP PAPER VALUE','',21980,''],['Notary Charges','',2180,''],['SERVICE CHARGES','',6935,6935]]);
+  // Notes for values that are now valid are removed; genuinely missing values are still reported.
+  assert.equal(status.validation_notes,'GST total is missing; Item 1 quantity is missing; Item 1 amount is missing; Item 2 quantity is missing; Item 2 amount is missing; Item 3 quantity is missing');
+  assert.deepEqual([status.found,status.state,status.review_status,status.validation_status],[true,'saved','Needs Review','Flagged']);
+});
+test('duplicate and failed status results are unchanged by the text-field fix',()=>{
+  const id='02945aa9-9b1c-40a2-8843-f4d2e37bf3d4';
+  const duplicate=normalizeSubmissionStatus({found:true,duplicate:true,submission_id:id,state:'duplicate',review_status:'Duplicate'},id);
+  assert.deepEqual([duplicate.duplicate,duplicate.state,duplicate.review_status,duplicate.items],[true,'duplicate','Duplicate',[]]);
+  const failed=normalizeSubmissionStatus({found:false,failed:true,submission_id:id,state:'failed',review_status:'Extraction Failed',items:[],message:'Gemini extraction failed: Bad request'},id);
+  assert.deepEqual([failed.found,failed.state,failed.message],[false,'failed','Gemini extraction failed: Bad request']);
+});
+test('CSV output for a normal invoice is unchanged',()=>{
+  const invoice=normalize({supplier:'Horizon Software Solutions',invoice_number:'HS-2026-9905',date:'25 Oct 2026',currency:'₹',subtotal:'25,000.00',gst_total:'4,500.00',grand_total:'29,500.00',items:[{description:'Software',qty:'1',rate:'25,000.00',amount:'25,000.00',gst_percent:'18%'}]});
+  assert.equal(safeCsv(invoice),'"supplier","invoice_number","date","currency","description","quantity","unit_price","amount","subtotal","discount","tax","round_off","total"\r\n"Horizon Software Solutions","HS-2026-9905","25 Oct 2026","₹","Software","1","25000","25000","25000","","4500","","29500"\r\n');
+});
